@@ -16,7 +16,7 @@ Open-source sub-GHz RF pentesting device: a WEMOS D1 Mini (ESP8266) driving a CC
 
 ## Building & flashing (Arduino IDE)
 
-There is no CLI build system, Makefile, or test suite. Firmware is compiled and flashed via the Arduino IDE:
+There is no Makefile or test suite. Build reproducibly with the pinned arduino-cli profile — `arduino-cli compile --profile d1mini cc1101-tool-esp8266` (the `sketch.yaml` pins the ESP8266 core and auto-installs SmartRC) — or via the Arduino IDE:
 
 1. Install the **SmartRC-CC1101-Driver-Lib** (ELECHOUSE fork by Little_S@tan): https://github.com/LSatan/SmartRC-CC1101-Driver-Lib — either the GitHub zip or the copy in `original_files/`.
 2. Add ESP8266 board support and select the WEMOS D1 Mini board.
@@ -31,7 +31,7 @@ A "Low Memory" warning during compilation is expected and harmless.
 Single-translation-unit Arduino sketch. Key structure in `cc1101-tool-esp8266.ino`:
 
 - **Pin map & sizing constants** at the top (`sck/miso/mosi/ss/gdo0/gdo2`, `RECORDINGBUFFERSIZE`, `EPROMSIZE`, `CCBUFFERSIZE`, `BUF_LENGTH`). Porting to another MCU means changing these — the README documents the correct values per board (ESP32, XIAO C3, Nano, RP2040, Pro Micro). ESP8266 uses `EPROMSIZE 4096` (flash-simulated EEPROM).
-- **Global mode flags** (`receivingmode`, `jammingmode`, `recordingmode`, `chatmode`) act as a small state machine; `loop()` branches on them. The `x` command clears activity and `init` re-runs `cc1101initialize()` with defaults.
+- **Single `activeMode` enum** (`MODE_IDLE/RX/JAM/REC/CHAT/SCAN/SNIFF/BRUTE`) is the state machine; `loop()` branches on it and `serviceActiveMode()` advances the long-running modes one slice per pass. The `x` command (via `stopActiveMode()`) clears activity and `init` re-runs `cc1101initialize()` with defaults.
 - **`exec(char *cmdline)`** (~line 155) is the command dispatcher: a long `strcmp_P(command, PSTR("..."))` if/else chain. **To add or change a CLI command, edit this chain** and mirror the change in the `help` text block (~line 173) and in `README.md`'s command list.
 - **`cc1101initialize()`** sets default radio parameters (433.92 MHz etc.) via the ELECHOUSE driver.
 - **Buffers**: `ccsendingbuffer`/`ccreceivingbuffer` (packet mode, `CCBUFFERSIZE`) and `bigrecordingbuffer` (`RECORDINGBUFFERSIZE`) for RAW record/replay. `save`/`load` persist the recording buffer to EEPROM.
