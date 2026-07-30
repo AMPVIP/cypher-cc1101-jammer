@@ -274,6 +274,11 @@ static void exec(char *cmdline)
     byte j, k;
     float settingf1;
 
+    // A bit-bang RAW mode (sniff/brute) leaves the radio in async mode. Any new
+    // command means the user wants something else, so cleanly stop that mode first
+    // (restoring packet mode) - otherwise packet RX/TX would be silently broken.
+    if (activeMode == MODE_SNIFF || activeMode == MODE_BRUTE) stopActiveMode();
+
   // identification of the command & actions
       
     if (strcmp_P(command, PSTR("help")) == 0) {
