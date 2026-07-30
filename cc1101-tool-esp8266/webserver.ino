@@ -13,6 +13,14 @@ class StringPrint : public Print {
     }
 };
 
+// Temporary stubs (replaced in Task 4/5). Remove when those land.
+// modeName is a macro, not a function: Arduino's auto-prototype generator
+// mangles/misplaces prototypes for any function here that lacks a manual
+// forward declaration in the main sketch (see its "Forward declarations"
+// comment), and this stub isn't listed there since it is temporary.
+#define modeName() "idle"
+float scanBestFreq = 0; int scanBestRssi = -100;
+
 // Bring up the SoftAP with the configured static IP.
 static void startAP(void)
 {
@@ -32,8 +40,38 @@ static void handleRoot(void)
     server.send(200, F("text/plain"), F("cc1101 web server up"));
 }
 
+// Run a CLI command string through exec() with output captured, return as text.
+static void handleCmd(void)
+{
+    String c = server.arg("c");
+    static char line[BUF_LENGTH];
+    c.toCharArray(line, BUF_LENGTH);   // truncates safely at BUF_LENGTH-1
+    StringPrint sink;
+    out = &sink;                       // capture this command's output
+    exec(line);                        // reuse the exact same command logic
+    out = &Serial;                     // restore (single-threaded: safe)
+    server.send(200, F("text/plain"), sink.buf);
+}
+
+// Return current radio/mode state as JSON for the polling UI.
+static void handleStatus(void)
+{
+    String j = "{";
+    j += "\"mode\":\"";     j += modeName();                        j += "\",";
+    j += "\"freq\":";       j += String(currentFreq, 2);            j += ",";
+    j += "\"frames\":";     j += framesinbigrecordingbuffer;        j += ",";
+    j += "\"bufferPos\":";  j += bigrecordingbufferpos;             j += ",";
+    j += "\"scanFreq\":";   j += String(scanBestFreq, 2);           j += ",";
+    j += "\"scanRssi\":";   j += scanBestRssi;                      j += ",";
+    j += "\"uptime\":";     j += (millis() / 1000);
+    j += "}";
+    server.send(200, F("application/json"), j);
+}
+
 static void setupWebServer(void)
 {
     server.on("/", handleRoot);
+    server.on("/cmd", HTTP_POST, handleCmd);
+    server.on("/status", handleStatus);
     server.begin();
 }
