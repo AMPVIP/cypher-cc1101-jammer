@@ -24,6 +24,13 @@
 #define EPROMSIZE 4096              // Size of EEPROM in your Arduino chip. For  ESP8266 size is 4096
 #define BUF_LENGTH 128             // Buffer for the incoming command.
 
+// named constants (replacing magic numbers scattered through the code)
+#define MAX_PAYLOAD 60             // max RF payload bytes per frame
+#define MAX_HEXCHARS 120           // max hex input chars (2 * MAX_PAYLOAD)
+#define HEXDUMP_CHUNK 32           // bytes per chunk in RAW hex dumps
+#define SCAN_RSSI_MARK (-75)       // dBm threshold to consider a signal present
+#define RSSI_NONE (-100)           // sentinel "no signal" rssi value
+
 // defining PINs set for ESP8266 - WEMOS D1 MINI module
 byte sck = 14;     // GPIO 14
 byte miso = 12;  // GPIO 12
@@ -39,17 +46,11 @@ int bigrecordingbufferpos = 0;
 // number of frames in big recording buffer
 int framesinbigrecordingbuffer = 0; 
 
-// check if CLI receiving mode enabled
-int receivingmode = 0; 
-
-// check if CLI jamming mode enabled
-int jammingmode = 0; 
-
-// check if CLI recording mode enabled
-int recordingmode = 0; 
-
-// check if CLI chat mode enabled
-int chatmode = 0; 
+// CLI activity flags (exactly one active at a time)
+bool receivingmode = false;
+bool jammingmode = false;
+bool recordingmode = false;
+bool chatmode = false;
 
 static bool do_echo = true;
 
@@ -58,15 +59,29 @@ byte ccreceivingbuffer[CCBUFFERSIZE] = {0};
 
 // buffer for sending  CC1101
 byte ccsendingbuffer[CCBUFFERSIZE] = {0};
-//char ccsendingbuffer[CCBUFFERSIZE] = {0};
 
 // buffer for recording and replaying of many frames
 byte bigrecordingbuffer[RECORDINGBUFFERSIZE] = {0};
 
-// buffer for hex to ascii conversions 
+// buffer for hex to ascii conversions
 byte textbuffer[BUF_LENGTH];
-//char textbuffer[BUF_LENGTH];
 
+
+// Forward declarations. Arduino's auto-prototype generator mangles the
+// return type of static functions on this sketch (producing broken
+// prototypes and bogus #line directives that fail to compile), so we
+// declare every function explicitly to suppress that generation.
+void asciitohex(byte *ascii_ptr, byte *hex_ptr, int len);
+void hextoascii(byte *ascii_ptr, byte *hex_ptr, int len);
+static void cc1101initialize(void);
+static void zeroRecordingBuffer(void);
+static void enterRawMode(bool tx);
+static void exitRawMode(bool tx);
+static void dumpBufferHex(int start, int count);
+static bool ingestHex(char *in, byte *out, int *outlen);
+static void exec(char *cmdline);
+void setup();
+void loop();
 
 
 // convert bytes in table to string with hex numbers
@@ -88,9 +103,10 @@ void asciitohex(byte *ascii_ptr, byte *hex_ptr,int len)
          { k = j - 10 + 65; }
       else
          { k = j + 48; }
-      hex_ptr[(2*i)+1] = k ; 
+      hex_ptr[(2*i)+1] = k ;
     };
-    hex_ptr[(2*i)+2] = '\0' ; 
+    // terminate right after the last written nibble (i == len here)
+    hex_ptr[2*len] = '\0' ;
 }
 
 
@@ -99,17 +115,19 @@ void asciitohex(byte *ascii_ptr, byte *hex_ptr,int len)
 {
     byte i,j;
     for(i = 0; i < (len/2); i++)
-     { 
+     {
+     // start from zero so invalid nibbles leave a defined 0, not garbage
+     ascii_ptr[i] = 0;
      j = hex_ptr[i*2];
      if ((j>47) && (j<58))  ascii_ptr[i] = (j - 48) * 16;
      if ((j>64) && (j<71))  ascii_ptr[i] = (j - 55) * 16;
      if ((j>96) && (j<103)) ascii_ptr[i] = (j - 87) * 16;
      j = hex_ptr[i*2+1];
-     if ((j>47) && (j<58))  ascii_ptr[i] = ascii_ptr[i]  + (j - 48);
-     if ((j>64) && (j<71))  ascii_ptr[i] = ascii_ptr[i]  + (j - 55);
-     if ((j>96) && (j<103)) ascii_ptr[i] = ascii_ptr[i]  + (j - 87);
+     if ((j>47) && (j<58))  ascii_ptr[i] += (j - 48);
+     if ((j>64) && (j<71))  ascii_ptr[i] += (j - 55);
+     if ((j>96) && (j<103)) ascii_ptr[i] += (j - 87);
      };
-    ascii_ptr[i++] = '\0' ;
+    ascii_ptr[i] = '\0' ;
 }
 
 // Initialize CC1101 board with default settings, you may change your preferences here
@@ -141,12 +159,62 @@ static void cc1101initialize(void)
     ELECHOUSE_cc1101.setPacketLength(0);    // Indicates the packet length when fixed packet length mode is enabled. If variable packet length mode is used, this value indicates the maximum packet length allowed.
     ELECHOUSE_cc1101.setCrc(0);             // 1 = CRC calculation in TX and CRC check in RX enabled. 0 = CRC disabled for TX and RX.
     ELECHOUSE_cc1101.setCRC_AF(0);          // Enable automatic flush of RX FIFO when CRC is not OK. This requires that only one packet is in the RXIFIFO and that packet length is limited to the RX FIFO size.
-    ELECHOUSE_cc1101.setDcFilterOff(0);     // Disable digital DC blocking filter before demodulator. Only for data rates ≤ 250 kBaud The recommended IF frequency changes when the DC blocking is disabled. 1 = Disable (current optimized). 0 = Enable (better sensitivity).
+    ELECHOUSE_cc1101.setDcFilterOff(0);     // Disable digital DC blocking filter before demodulator. Only for data rates <= 250 kBaud The recommended IF frequency changes when the DC blocking is disabled. 1 = Disable (current optimized). 0 = Enable (better sensitivity).
     ELECHOUSE_cc1101.setManchester(0);      // Enables Manchester encoding/decoding. 0 = Disable. 1 = Enable.
     ELECHOUSE_cc1101.setFEC(0);             // Enable Forward Error Correction (FEC) with interleaving for packet payload (Only supported for fixed packet length mode. 0 = Disable. 1 = Enable.
     ELECHOUSE_cc1101.setPRE(0);             // Sets the minimum number of preamble bytes to be transmitted. Values: 0 : 2, 1 : 3, 2 : 4, 3 : 6, 4 : 8, 5 : 12, 6 : 16, 7 : 24
-    ELECHOUSE_cc1101.setPQT(0);             // Preamble quality estimator threshold. The preamble quality estimator increases an internal counter by one each time a bit is received that is different from the previous bit, and decreases the counter by 8 each time a bit is received that is the same as the last bit. A threshold of 4∙PQT for this counter is used to gate sync word detection. When PQT=0 a sync word is always accepted.
+    ELECHOUSE_cc1101.setPQT(0);             // Preamble quality estimator threshold. The preamble quality estimator increases an internal counter by one each time a bit is received that is different from the previous bit, and decreases the counter by 8 each time a bit is received that is the same as the last bit. A threshold of 4*PQT for this counter is used to gate sync word detection. When PQT=0 a sync word is always accepted.
     ELECHOUSE_cc1101.setAppendStatus(0);    // When enabled, two status bytes will be appended to the payload of the packet. The status bytes contain RSSI and LQI values, as well as CRC OK.
+}
+
+
+// ---- shared helpers (extracted from repeated command code) ----
+
+// zero the whole recording buffer and rewind its pointers
+static void zeroRecordingBuffer(void)
+{
+    memset(bigrecordingbuffer, 0, RECORDINGBUFFERSIZE);
+    bigrecordingbufferpos = 0;
+    framesinbigrecordingbuffer = 0;
+}
+
+// put CC1101 into async (bit-banged GDO0) mode for RAW record/replay
+static void enterRawMode(bool tx)
+{
+    ELECHOUSE_cc1101.setCCMode(0);
+    ELECHOUSE_cc1101.setPktFormat(3);
+    if (tx) ELECHOUSE_cc1101.SetTx(); else ELECHOUSE_cc1101.SetRx();
+}
+
+// restore CC1101 to normal packet mode after RAW record/replay
+static void exitRawMode(bool tx)
+{
+    ELECHOUSE_cc1101.setCCMode(1);
+    ELECHOUSE_cc1101.setPktFormat(0);
+    if (tx) ELECHOUSE_cc1101.SetTx(); else ELECHOUSE_cc1101.SetRx();
+}
+
+// dump 'count' bytes of the recording buffer as hex, in HEXDUMP_CHUNK chunks
+static void dumpBufferHex(int start, int count)
+{
+    for (int i = start; i < start + count; i += HEXDUMP_CHUNK)
+       {
+         asciitohex(&bigrecordingbuffer[i], textbuffer, HEXDUMP_CHUNK);
+         Serial.print((char *)textbuffer);
+         ESP.wdtFeed();
+         yield();
+       }
+}
+
+// parse a hex string (max MAX_HEXCHARS chars, even length) into out[],
+// storing the resulting byte count in *outlen; returns false on bad input
+static bool ingestHex(char *in, byte *out, int *outlen)
+{
+    int n = strlen(in);
+    if ((n <= 0) || (n > MAX_HEXCHARS) || (n & 1)) return false;
+    hextoascii(out, (byte *)in, n);
+    *outlen = n / 2;
+    return true;
 }
 
 
@@ -158,15 +226,15 @@ static void exec(char *cmdline)
     char *command = strsep(&cmdline, " ");
     int setting, setting2, len;
     byte j, k;
-    uint16_t brute, poweroftwo;   
+    uint32_t brute, poweroftwo;
     float settingf1;
     float settingf2;
     // variables for frequency scanner
     float freq;
-    long compare_freq;
-    float mark_freq;
+    long compare_freq = 0;
+    float mark_freq = 0;
     int rssi;
-    int mark_rssi=-100; 
+    int mark_rssi=-100;
     
   // identification of the command & actions
       
@@ -196,7 +264,7 @@ static void exec(char *cmdline)
          ));
           yield();
         Serial.println(F(
-          "setdcfilteroff <mode> : Disable digital DC blocking filter before demodulator. Only for data rates ≤ 250 kBaud The recommended IF frequency changes when the DC blocking is disabled. 1 = Disable (current optimized). 0 = Enable (better sensitivity).\r\n\r\n"
+          "setdcfilteroff <mode> : Disable digital DC blocking filter before demodulator. Only for data rates <= 250 kBaud The recommended IF frequency changes when the DC blocking is disabled. 1 = Disable (current optimized). 0 = Enable (better sensitivity).\r\n\r\n"
           "setmanchester <mode> : Enables Manchester encoding/decoding. 0 = Disable. 1 = Enable.\r\n\r\n"
           "setfec <mode> : Enable Forward Error Correction (FEC) with interleaving for packet payload (Only supported for fixed packet length mode. 0 = Disable. 1 = Enable.\r\n\r\n"
           "setpre <mode> : Sets the minimum number of preamble bytes to be transmitted. Values: 0 : 2, 1 : 3, 2 : 4, 3 : 6, 4 : 8, 5 : 12, 6 : 16, 7 : 24\r\n\r\n"
@@ -330,13 +398,14 @@ static void exec(char *cmdline)
     } else if (strcmp_P(command, PSTR("setsyncword")) == 0) {
         setting = atoi(strsep(&cmdline, " "));
         setting2 = atoi(cmdline);
+        // args are entered LOW then HIGH; setSyncWord takes (high, low)
         ELECHOUSE_cc1101.setSyncWord(setting2, setting);
         Serial.print(F("\r\nSynchronization:\r\n"));
         Serial.print(F("high = "));
-        Serial.print(setting);
-        Serial.print(F("\r\nlow = "));
         Serial.print(setting2);
-        Serial.print(F("\r\n"));  
+        Serial.print(F("\r\nlow = "));
+        Serial.print(setting);
+        Serial.print(F("\r\n"));
         yield();
     
     // Handling SETADRCHK command         
@@ -569,26 +638,34 @@ static void exec(char *cmdline)
            {  // copying byte after byte from SRAM to EEPROM
             EEPROM.write(setting, bigrecordingbuffer[setting] );
            };
-        // following command is required for ESP32
-        EEPROM.commit();   
+        // commit the writes (flash-simulated EEPROM needs this)
+        EEPROM.commit();
         // print confirmation
         Serial.print(F("\r\nSaving complete.\r\n\r\n"));
         yield();
         
                  
     // handling LOAD command
-    } else if (strcmp_P(command, PSTR("load")) == 0) {     
-         // first flushing bigrecordingbuffer with zeros and rewinding all the pointers 
-        for (setting = 0; setting<RECORDINGBUFFERSIZE; setting++)  bigrecordingbuffer[setting] = 0;  
-        // and rewinding all the pointers to the recording buffer
-        bigrecordingbufferpos = 0;
-        framesinbigrecordingbuffer = 0;     
+    } else if (strcmp_P(command, PSTR("load")) == 0) {
+        // flush the recording buffer and rewind its pointers first
+        zeroRecordingBuffer();
         //start loading EEPROM non-volatile memory content into recording buffer
         Serial.print(F("\r\nLoading content from the non-volatile memory into the recording buffer...\r\n"));
         
-        for (setting=0; setting<EPROMSIZE ; setting++)  
-           { // copying byte after byte from EEPROM to SRAM 
+        for (setting=0; setting<EPROMSIZE ; setting++)
+           { // copying byte after byte from EEPROM to SRAM
             bigrecordingbuffer[setting] = EEPROM.read(setting);
+           }
+        // reconstruct the frame count by walking the length-prefixed frames,
+        // otherwise 'show'/'play' would see 0 frames and do nothing.
+        // (RAW captures have no framing - use 'showraw'/'playraw' for those.)
+        framesinbigrecordingbuffer = 0;
+        for (int p = 0; p < EPROMSIZE; )
+           {
+            int flen = bigrecordingbuffer[p];
+            if ((flen <= 0) || (flen > 60) || (p + 1 + flen > EPROMSIZE)) break;
+            framesinbigrecordingbuffer++;
+            p += 1 + flen;
            }
         Serial.print(F("\r\nLoading complete. Enter 'show' or 'showraw' to see the buffer content.\r\n\r\n"));
         yield();
@@ -647,17 +724,16 @@ static void exec(char *cmdline)
         setting = atoi(strsep(&cmdline, " "));
         // take number of bits for brute forcing
         setting2 = atoi(cmdline);
-        // calculate power of 2 upon setting
-        poweroftwo = 1 << setting2;
-               
-        if (setting>0)
-        {        
-        // setup async mode on CC1101 and go into TX mode
-        // with GDO0 pin processing
-        ELECHOUSE_cc1101.setCCMode(0); 
-        ELECHOUSE_cc1101.setPktFormat(3);
-        ELECHOUSE_cc1101.SetTx();
-        
+        // calculate power of 2 upon setting (guard the shift: 1..16 bits;
+        // counters are 32-bit so 2^16 fits and the loop runs to completion)
+        if (setting2 > 16) setting2 = 16;
+        poweroftwo = (setting2 > 0) ? (1UL << setting2) : 0;
+
+        if ((setting>0) && (setting2>0))
+        {
+        // setup async mode on CC1101 and go into TX mode with GDO0 processing
+        enterRawMode(true);
+
         //start playing RF with setting GDO0 bit state with bitbanging
         Serial.print(F("\r\nStarting Brute Forcing press any key to stop...\r\n"));
         pinMode(gdo0, OUTPUT);
@@ -681,14 +757,11 @@ static void exec(char *cmdline)
            };           
 
         Serial.print(F("\r\nBrute forcing complete.\r\n\r\n"));
-        
+
         // setting normal pkt format again
-        ELECHOUSE_cc1101.setCCMode(1); 
-        ELECHOUSE_cc1101.setPktFormat(0);
-        ELECHOUSE_cc1101.SetTx();
-        // pinMode(gdo0pin, INPUT);
+        exitRawMode(true);
         } // end of IF
-        
+
         else { Serial.print(F("Wrong parameters.\r\n")); };
 
   
@@ -696,16 +769,14 @@ static void exec(char *cmdline)
     // Handling TX command         
        } else if (strcmp_P(command, PSTR("tx")) == 0) {
         // convert hex array to set of bytes
-        if ((strlen(cmdline)<=120) && (strlen(cmdline)>0) )
-        { 
-                hextoascii(textbuffer,(byte *)cmdline, strlen(cmdline));        
-                memcpy(ccsendingbuffer, textbuffer, strlen(cmdline)/2 );
-                ccsendingbuffer[strlen(cmdline)/2] = 0x00;       
-                Serial.print("\r\nTransmitting RF packets.\r\n");
+        if ( ingestHex(cmdline, ccsendingbuffer, &len) )
+        {
+                ccsendingbuffer[len] = 0x00;
+                Serial.print(F("\r\nTransmitting RF packets.\r\n"));
                 // send these data to radio over CC1101
-                ELECHOUSE_cc1101.SendData(ccsendingbuffer, (byte)(strlen(cmdline)/2));
-                // for DEBUG only
-                asciitohex(ccsendingbuffer, textbuffer,  strlen(cmdline)/2 );
+                ELECHOUSE_cc1101.SendData(ccsendingbuffer, (byte)len);
+                // echo back the frame that was sent
+                asciitohex(ccsendingbuffer, textbuffer, len);
                 Serial.print(F("Sent frame: "));
                 Serial.print((char *)textbuffer);
                 Serial.print(F("\r\n")); }
@@ -721,36 +792,29 @@ static void exec(char *cmdline)
         if (setting>0)
         {
         // setup async mode on CC1101 with GDO0 pin processing
-        ELECHOUSE_cc1101.setCCMode(0); 
-        ELECHOUSE_cc1101.setPktFormat(3);
-        ELECHOUSE_cc1101.SetRx();
+        enterRawMode(false);
 
         //start recording to the buffer with bitbanging of GDO0 pin state
         Serial.print(F("\r\nWaiting for radio signal to start RAW recording...\r\n"));
         pinMode(gdo0, INPUT);
 
-        // this is only for ESP32 boards because they are getting some noise on the beginning
+        // prime the GDO0 read (some boards emit noise at the start)
         setting2 = digitalRead(gdo0);
-        delayMicroseconds(1000);  
-            
-        // waiting for some data first or serial port signal
-        // while (!Serial.available() ||  (digitalRead(gdo0) == LOW) ); 
-        // feed the watchdog while waiting for the RF signal    
-        while ( digitalRead(gdo0) == LOW ) 
-                {  yield(); 
+        delayMicroseconds(1000);
+
+        // wait (feeding the watchdog) until the RF line goes high
+        while ( digitalRead(gdo0) == LOW )
+                {  yield();
                    // feed the watchdog in ESP8266
-                   ESP.wdtFeed();                  
+                   ESP.wdtFeed();
                 };
-                   
-            
+
         //start recording to the buffer with bitbanging of GDO0 pin state
         Serial.print(F("\r\nStarting RAW recording to the buffer...\r\n"));
         pinMode(gdo0, INPUT);
 
-        // temporarly disable WDT for the time of recording
-        // ESP.wdtDisable();
-        // start recording RF signal        
-        for (int i=0; i<RECORDINGBUFFERSIZE ; i++)  
+        // start recording RF signal
+        for (int i=0; i<RECORDINGBUFFERSIZE ; i++)
            { 
              byte receivedbyte = 0;
              for(int j=7; j > -1; j--)  // 8 bits in a byte
@@ -761,20 +825,16 @@ static void exec(char *cmdline)
                  // store the output into recording buffer
              bigrecordingbuffer[i] = receivedbyte;
              // feed the watchdog in ESP8266
-             ESP.wdtFeed();  
+             ESP.wdtFeed();
            }
-        // enable WDT 
-        // ESP.wdtEnable(5000);
-        
+
         Serial.print(F("\r\nRecording RAW data complete.\r\n\r\n"));
         // setting normal pkt format again
-        ELECHOUSE_cc1101.setCCMode(1); 
-        ELECHOUSE_cc1101.setPktFormat(0);
-        ELECHOUSE_cc1101.SetRx();
+        exitRawMode(false);
         // feed the watchdog
-        ESP.wdtFeed();        
-        // needed for ESP8266   
-        yield();            
+        ESP.wdtFeed();
+        // needed for ESP8266
+        yield();
         }
         else { Serial.print(F("Wrong parameters.\r\n")); };
 
@@ -785,17 +845,13 @@ static void exec(char *cmdline)
         if (setting>0)
         {
         // setup async mode on CC1101 with GDO0 pin processing
-        ELECHOUSE_cc1101.setCCMode(0); 
-        ELECHOUSE_cc1101.setPktFormat(3);
-        ELECHOUSE_cc1101.SetRx();
+        enterRawMode(false);
         //start recording to the buffer with bitbanging of GDO0 pin state
         Serial.print(F("\r\nSniffer enabled...\r\n"));
-        pinMode(gdo0, INPUT);      
+        pinMode(gdo0, INPUT);
 
-        // temporarly disable WDT for the time of recording
-        // ESP.wdtDisable();       
        // Any received char over Serial port stops printing  RF received bytes
-        while (!Serial.available()) 
+        while (!Serial.available())
            {  
              
              // we have to use the buffer not to introduce delays
@@ -812,33 +868,20 @@ static void exec(char *cmdline)
                     // feed the watchdog
                     ESP.wdtFeed();
                   }; 
-             // enable WDT 
-             // ESP.wdtEnable(5000);        
              // feed the watchdog
-             ESP.wdtFeed();        
-             // needed for ESP8266   
-             yield();      
-                  
-             // when buffer full print the ouptput to serial port
-             for (int i = 0; i < RECORDINGBUFFERSIZE ; i = i + 32)  
-                    { 
-                       asciitohex(&bigrecordingbuffer[i], textbuffer,  32);
-                       Serial.print((char *)textbuffer);
-                       // feed the watchdog
-                       ESP.wdtFeed();
-                       // needed foe ESP8266                    
-                       yield();
-                    };
-                    
- 
+             ESP.wdtFeed();
+             // needed for ESP8266
+             yield();
+
+             // when buffer full print the output to serial port
+             dumpBufferHex(0, RECORDINGBUFFERSIZE);
+
            }; // end of While loop
-           
-        Serial.print(F("\r\nStopping the sniffer.\n\r\n"));
-        
+
+        Serial.print(F("\r\nStopping the sniffer.\r\n\r\n"));
+
         // setting normal pkt format again
-        ELECHOUSE_cc1101.setCCMode(1); 
-        ELECHOUSE_cc1101.setPktFormat(0);
-        ELECHOUSE_cc1101.SetRx();
+        exitRawMode(false);
         }
         else { Serial.print(F("Wrong parameters.\r\n")); };
 
@@ -849,19 +892,14 @@ static void exec(char *cmdline)
         setting = atoi(cmdline);
         if (setting>0)
         {
-        // setup async mode on CC1101 and go into TX mode
-        // with GDO0 pin processing
-        ELECHOUSE_cc1101.setCCMode(0); 
-        ELECHOUSE_cc1101.setPktFormat(3);
-        ELECHOUSE_cc1101.SetTx();
-        //start replaying GDO0 bit state from data in the buffer with bitbanging 
+        // setup async mode on CC1101 and go into TX mode with GDO0 processing
+        enterRawMode(true);
+        //start replaying GDO0 bit state from data in the buffer with bitbanging
         Serial.print(F("\r\nReplaying RAW data from the buffer...\r\n"));
         pinMode(gdo0, OUTPUT);
 
-        // temporarly disable WDT for the time of recording
-        // ESP.wdtDisable();
         // start RF replay
-        for (int i=1; i<RECORDINGBUFFERSIZE ; i++)  
+        for (int i=1; i<RECORDINGBUFFERSIZE ; i++)
            { 
              byte receivedbyte = bigrecordingbuffer[i];
              for(int j=7; j > -1; j--)  // 8 bits in a byte
@@ -872,19 +910,14 @@ static void exec(char *cmdline)
               // feed the watchdog
               ESP.wdtFeed();
            };
-        // Enable WDT 
-        // ESP.wdtEnable(5000);
-           
+
         Serial.print(F("\r\nReplaying RAW data complete.\r\n\r\n"));
         // setting normal pkt format again
-        ELECHOUSE_cc1101.setCCMode(1); 
-        ELECHOUSE_cc1101.setPktFormat(0);
-        ELECHOUSE_cc1101.SetTx();
-        // pinMode(gdo0pin, INPUT);
+        exitRawMode(true);
         // feed the watchdog
-        ESP.wdtFeed();        
-        // needed for ESP8266   
-        yield();      
+        ESP.wdtFeed();
+        // needed for ESP8266
+        yield();
         }
         else { Serial.print(F("Wrong parameters.\r\n")); };
 
@@ -892,20 +925,12 @@ static void exec(char *cmdline)
     } else if (strcmp_P(command, PSTR("showraw")) == 0) {
     // show the content of recorded RAW signal as hex numbers
        Serial.print(F("\r\nRecorded RAW data:\r\n"));
-       for (int i = 0; i < RECORDINGBUFFERSIZE ; i = i + 32)  
-           { 
-                    asciitohex(&bigrecordingbuffer[i], textbuffer,  32);
-                    Serial.print((char *)textbuffer);
-                    // feed the watchdog
-                    ESP.wdtFeed();
-                    // needed for ESP8266   
-                    yield();                      
-           };
+       dumpBufferHex(0, RECORDINGBUFFERSIZE);
        Serial.print(F("\r\n\r\n"));
        // feed the watchdog
        ESP.wdtFeed();
-       // needed for ESP8266   
-       yield();      
+       // needed for ESP8266
+       yield();
       
 
 
@@ -1000,16 +1025,12 @@ static void exec(char *cmdline)
 
     // Handling ADDRAW command         
        } else if (strcmp_P(command, PSTR("addraw")) == 0) {
-        // getting hex numbers - the content of the  frame 
-        len = strlen(cmdline);
+        // getting hex numbers - the content of the  frame
         // convert hex array to set of bytes
-        if ((len<=120) && (len>0) )
-        { 
-                // convert the hex content to array of bytes
-                hextoascii(textbuffer, (byte *)cmdline, len);        
-                len = len /2;
+        if ( ingestHex(cmdline, textbuffer, &len) )
+        {
                 // check if the frame fits into the buffer and store it
-                if (( bigrecordingbufferpos + len) < RECORDINGBUFFERSIZE) 
+                if (( bigrecordingbufferpos + len) < RECORDINGBUFFERSIZE)
                      { // copy current frame and increase pointer for next frames
                       memcpy(&bigrecordingbuffer[bigrecordingbufferpos], &textbuffer, len );
                       // increase position in big recording buffer for next frame
@@ -1037,17 +1058,13 @@ static void exec(char *cmdline)
                recordingmode = 0;
             }
         else if (recordingmode == 0)
-            {  ELECHOUSE_cc1101.SetRx(); 
+            {  ELECHOUSE_cc1101.SetRx();
                Serial.print(F("Enabled"));
-               bigrecordingbufferpos = 0;
-               // flush buffer for recording 
-               for (int i = 0; i < RECORDINGBUFFERSIZE; i++)
-                    { bigrecordingbuffer[RECORDINGBUFFERSIZE] = 0; };
+               // flush buffer for recording (rewinds pos + frame count too)
+               zeroRecordingBuffer();
                recordingmode = 1;
                jammingmode = 0;
                receivingmode = 0;
-               // start counting frames in the buffer
-               framesinbigrecordingbuffer = 0;
                };
         Serial.print(F("\r\n")); 
         // needed for ESP8266   
@@ -1056,9 +1073,9 @@ static void exec(char *cmdline)
 
     // Handling PLAY command         
        } else if (strcmp_P(command, PSTR("play")) == 0) {
-        setting = atoi(strsep(&cmdline, " ")); 
+        setting = atoi(strsep(&cmdline, " "));
         // if number of played frames is 0 it means play all frames
-        if (setting <= framesinbigrecordingbuffer)
+        if ((setting >= 0) && (setting <= framesinbigrecordingbuffer))
         {
           Serial.print(F("\r\nReplaying recorded frames.\r\n "));
           // rewind recording buffer position to the beginning
@@ -1081,14 +1098,13 @@ static void exec(char *cmdline)
                   // increase position to the buffer and check exception
                   bigrecordingbufferpos = bigrecordingbufferpos + 1 + len;
                   if ( bigrecordingbufferpos > RECORDINGBUFFERSIZE) break;
-                 // 
+                  // feed the watchdog per frame (a big replay must not starve it)
+                  ESP.wdtFeed();
+                  // needed for ESP8266
+                  yield();
                };
-               // feed the watchdog
-               ESP.wdtFeed();
-               // needed for ESP8266   
-               yield();      
-              
-             }; // end of IF framesinrecordingbuffer  
+
+             }; // end of IF framesinrecordingbuffer
         
           // rewind buffer position
           bigrecordingbufferpos = 0;
@@ -1099,16 +1115,12 @@ static void exec(char *cmdline)
 
     // Handling ADD command         
        } else if (strcmp_P(command, PSTR("add")) == 0) {
-        // getting hex numbers - the content of the  frame 
-        len = strlen(cmdline);
+        // getting hex numbers - the content of the  frame
         // convert hex array to set of bytes
-        if ((len<=120) && (len>0) )
-        { 
-                // convert the hex content to array of bytes
-                hextoascii(textbuffer,(byte *)cmdline, len);        
-                len = len /2;
+        if ( ingestHex(cmdline, textbuffer, &len) )
+        {
                 // check if the frame fits into the buffer and store it
-                if (( bigrecordingbufferpos + len + 1) < RECORDINGBUFFERSIZE) 
+                if (( bigrecordingbufferpos + len + 1) < RECORDINGBUFFERSIZE)
                      { // put info about number of bytes
                       bigrecordingbuffer[bigrecordingbufferpos] = len; 
                       bigrecordingbufferpos++;
@@ -1175,11 +1187,8 @@ static void exec(char *cmdline)
 
     // Handling FLUSH command         
     } else if (strcmp_P(command, PSTR("flush")) == 0) {
-        // flushing bigrecordingbuffer with zeros and rewinding all the pointers 
-        for (setting = 0; setting<RECORDINGBUFFERSIZE; setting++)  bigrecordingbuffer[setting] = 0;  
-        // and rewinding all the pointers to the recording buffer
-        bigrecordingbufferpos = 0;
-        framesinbigrecordingbuffer = 0;
+        // flush the recording buffer and rewind its pointers
+        zeroRecordingBuffer();
         Serial.print(F("\r\nRecording buffer cleared.\r\n"));
         // needed for ESP8266   
         yield();      
@@ -1210,13 +1219,8 @@ static void exec(char *cmdline)
     } else {
         Serial.print(F("Error: Unknown command: "));
         Serial.println(command);
-        // needed for ESP8266   
-        yield();      
-        //  debug only
-        // asciitohex(command, (byte *)textbuffer,  strlen(command));
-        // Serial.print(F("\r\n"));
-        // Serial.print((char *)textbuffer);
-        // Serial.print(F("\r\n"));
+        // needed for ESP8266
+        yield();
     }
 }
 
@@ -1231,9 +1235,12 @@ void setup() {
 
      Serial.println();  // print CRLF
 
-    //Init EEPROM - for ESP32 based boards only
+    // Init flash-simulated EEPROM (ESP8266)
      EEPROM.begin(EPROMSIZE);
-    
+
+     // seed the PRNG once for the 'jam' random payloads
+     randomSeed(analogRead(0));
+
      // initialize CC1101 module with preffered parameters
      cc1101initialize();
 
@@ -1246,11 +1253,8 @@ void setup() {
       // setup variables
      bigrecordingbufferpos = 0;
 
-     // Enable software watchdog in ESP8266 chip with 3 second fuse in case something goes wrong...
+     // Enable the ESP8266 software watchdog as a safety net
      ESP.wdtEnable(5000);
-  
-     // disable temporarly software watchdog in ESP8266 chip
-     // ESP.wdtDisable();    
 }
 
 
@@ -1295,9 +1299,12 @@ void loop() {
               //
               
               // increase CC1101 TX buffer position
-              i++;   
+              i++;
              };
 
+            // clamp: a trailing CR appends an extra LF and can push i past the
+            // last index, so keep the NUL write inside ccsendingbuffer[]
+            if (i > (CCBUFFERSIZE - 1)) i = CCBUFFERSIZE - 1;
             // put NULL at the end of CC transmission buffer
             ccsendingbuffer[i] = '\0';
 
@@ -1437,19 +1444,17 @@ void loop() {
 
       // if jamming mode activate continously send something over RF...
       if ( jammingmode == 1)
-      { 
-        // populate cc1101 sending buffer with random values
-        randomSeed(analogRead(0));
-        
-        for (i = 0; i<60; i++)
-           { ccsendingbuffer[i] = (byte)random(255); 
+      {
+        // populate cc1101 sending buffer with random values (PRNG seeded in setup)
+        for (i = 0; i<MAX_PAYLOAD; i++)
+           { ccsendingbuffer[i] = (byte)random(255);
              // feed the watchdog
              ESP.wdtFeed();
-             // needed for ESP8266   
-             yield();                   
-           };        
+             // needed for ESP8266
+             yield();
+           };
         // send these data to radio over CC1101
-        ELECHOUSE_cc1101.SendData(ccsendingbuffer,60);
+        ELECHOUSE_cc1101.SendData(ccsendingbuffer,MAX_PAYLOAD);
         // feed the watchdog
         ESP.wdtFeed();
         // needed for ESP8266   

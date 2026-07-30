@@ -1,0 +1,4 @@
+# Arduino sketches must stay LF-only. CRLF line endings break the Arduino
+# prototype generator (return-type-less prototypes + bogus #line directives),
+# which is what stopped these sketches compiling on modern toolchains.
+*.ino text eol=lf
