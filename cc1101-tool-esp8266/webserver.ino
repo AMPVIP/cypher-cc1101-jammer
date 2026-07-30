@@ -1,6 +1,18 @@
 // Web layer for the CC1101 tool: WiFi AP + HTTP control panel.
 // This file is concatenated with the main sketch by the Arduino build.
 
+// A Print target that accumulates everything written to it into a String,
+// so a command's output can be captured and returned over HTTP.
+class StringPrint : public Print {
+  public:
+    String buf;
+    size_t write(uint8_t c) override { buf += (char)c; return 1; }
+    size_t write(const uint8_t *b, size_t n) override {
+        for (size_t i = 0; i < n; i++) buf += (char)b[i];
+        return n;
+    }
+};
+
 // Bring up the SoftAP with the configured static IP.
 static void startAP(void)
 {
