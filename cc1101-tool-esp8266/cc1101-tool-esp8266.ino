@@ -18,6 +18,8 @@
 
 #include <ELECHOUSE_CC1101_SRC_DRV.h>
 #include <EEPROM.h>
+#include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
 
 #define CCBUFFERSIZE 64
 #define RECORDINGBUFFERSIZE 4096   // Buffer for recording the frames
@@ -30,6 +32,19 @@
 #define HEXDUMP_CHUNK 32           // bytes per chunk in RAW hex dumps
 #define SCAN_RSSI_MARK (-75)       // dBm threshold to consider a signal present
 #define RSSI_NONE (-100)           // sentinel "no signal" rssi value
+
+// ---- WiFi Access Point configuration (edit to taste) ----
+#define AP_SSID     "cc1101"
+#define AP_PASSWORD "cc1101"          // >= 8 chars for WPA2; "" for an open AP
+IPAddress apIP(192, 168, 1, 100);
+IPAddress apGateway(192, 168, 1, 1);
+IPAddress apSubnet(255, 255, 255, 0);
+
+ESP8266WebServer server(80);
+
+// Current base frequency, tracked here because the SmartRC library has no
+// getMHZ() accessor. Updated by cc1101initialize() and the setmhz handler.
+float currentFreq = 433.92;
 
 // defining PINs set for ESP8266 - WEMOS D1 MINI module
 byte sck = 14;     // GPIO 14
@@ -82,6 +97,11 @@ static bool ingestHex(char *in, byte *out, int *outlen);
 static void exec(char *cmdline);
 void setup();
 void loop();
+static void startAP(void);
+static void setupWebServer(void);
+static void handleRoot(void);
+static void handleCmd(void);
+static void handleStatus(void);
 
 
 // convert bytes in table to string with hex numbers
@@ -319,6 +339,7 @@ static void exec(char *cmdline)
     } else if (strcmp_P(command, PSTR("setmhz")) == 0) {
         settingf1 = atof(cmdline);
         ELECHOUSE_cc1101.setMHZ(settingf1);
+        currentFreq = settingf1;
         Serial.print(F("\r\nFrequency: "));
         Serial.print(settingf1);
         Serial.print(F(" MHz\r\n"));
@@ -1255,6 +1276,10 @@ void setup() {
 
      // Enable the ESP8266 software watchdog as a safety net
      ESP.wdtEnable(5000);
+
+     // bring up WiFi AP and the web control panel
+     startAP();
+     setupWebServer();
 }
 
 
@@ -1264,7 +1289,10 @@ void loop() {
   int i = 0;
 
    // feed the watchdog in ESP8266
-   ESP.wdtFeed(); 
+   ESP.wdtFeed();
+
+   // service pending HTTP requests
+   server.handleClient();
 
     /* Process incoming commands. */
     while (Serial.available()) {
