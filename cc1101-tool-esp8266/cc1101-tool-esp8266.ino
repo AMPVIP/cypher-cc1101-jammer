@@ -73,6 +73,8 @@ Mode activeMode = MODE_IDLE;
 float scanFrom = 0, scanTo = 0, scanCursor = 0;
 float scanBestFreq = 0;  int scanBestRssi = -100;  long scanCompare = 0;
 
+int sniffInterval = 0;   // microseconds per sample while MODE_SNIFF is active
+
 // human-readable name for /status
 static const char* modeName(void) {
     switch (activeMode) {
@@ -113,6 +115,7 @@ static bool ingestHex(char *in, byte *out, int *outlen);
 static const char* modeName(void);
 static void exec(char *cmdline);
 static void serviceActiveMode(void);
+static void stopActiveMode(void);
 void setup();
 void loop();
 static void startAP(void);
@@ -801,50 +804,14 @@ static void exec(char *cmdline)
 
    // handling RXRAW command - sniffer
     } else if (strcmp_P(command, PSTR("rxraw")) == 0) {
-        // take interval period for samplink
-        setting = atoi(cmdline);
-        if (setting>0)
-        {
-        // setup async mode on CC1101 with GDO0 pin processing
-        enterRawMode(false);
-        //start recording to the buffer with bitbanging of GDO0 pin state
-        out->print(F("\r\nSniffer enabled...\r\n"));
-        pinMode(gdo0, INPUT);
-
-       // Any received char over Serial port stops printing  RF received bytes
-        while (!Serial.available())
-           {  
-             
-             // we have to use the buffer not to introduce delays
-             for (int i=0; i<RECORDINGBUFFERSIZE ; i++)  
-                { 
-                  byte receivedbyte = 0;
-                  for(int j=7; j > -1; j--)  // 8 bits in a byte
-                    {
-                       bitWrite(receivedbyte, j, digitalRead(gdo0));  // Capture GDO0 state into the byte
-                       delayMicroseconds(setting);                    // delay for selected sampling interval
-                    }; 
-                    // store the output into recording buffer
-                    bigrecordingbuffer[i] = receivedbyte;
-                    // feed the watchdog
-                    ESP.wdtFeed();
-                  }; 
-             // feed the watchdog
-             ESP.wdtFeed();
-             // needed for ESP8266
-             yield();
-
-             // when buffer full print the output to serial port
-             dumpBufferHex(0, RECORDINGBUFFERSIZE);
-
-           }; // end of While loop
-
-        out->print(F("\r\nStopping the sniffer.\r\n\r\n"));
-
-        // setting normal pkt format again
-        exitRawMode(false);
+        sniffInterval = atoi(cmdline);
+        if (sniffInterval > 0) {
+            enterRawMode(false);
+            out->print(F("\r\nSniffer enabled...\r\n"));
+            pinMode(gdo0, INPUT);
+            activeMode = MODE_SNIFF;
         }
-        else { out->print(F("Wrong parameters.\r\n")); };
+        else { out->print(F("Wrong parameters.\r\n")); }
 
 
     // handling PLAYRAW command
@@ -1153,7 +1120,7 @@ static void exec(char *cmdline)
     // Handling X command         
     // command 'x' stops jamming, receiveing, recording...
     } else if (strcmp_P(command, PSTR("x")) == 0) {
-        activeMode = MODE_IDLE;
+        stopActiveMode();
         out->print(F("\r\n"));
         // needed for ESP8266
         yield();
@@ -1172,6 +1139,13 @@ static void exec(char *cmdline)
         // needed for ESP8266
         yield();
     }
+}
+
+
+// stop the active mode and restore normal packet mode if it was a raw mode
+static void stopActiveMode(void) {
+    if (activeMode == MODE_SNIFF) exitRawMode(false);
+    activeMode = MODE_IDLE;
 }
 
 
@@ -1202,6 +1176,19 @@ static void serviceActiveMode(void)
                 }
             }
         }
+    }
+    else if (activeMode == MODE_SNIFF) {
+        // capture one bufferful of GDO0 samples, then dump it (timing-coherent per byte)
+        for (int i = 0; i < RECORDINGBUFFERSIZE; i++) {
+            byte receivedbyte = 0;
+            for (int j = 7; j > -1; j--) {
+                bitWrite(receivedbyte, j, digitalRead(gdo0));
+                delayMicroseconds(sniffInterval);
+            }
+            bigrecordingbuffer[i] = receivedbyte;
+            ESP.wdtFeed();
+        }
+        dumpBufferHex(0, RECORDINGBUFFERSIZE);
     }
 }
 
@@ -1256,7 +1243,7 @@ void loop() {
 
    // any serial input stops a running background mode (preserves old UX)
    if (activeMode == MODE_SCAN || activeMode == MODE_SNIFF || activeMode == MODE_BRUTE) {
-       if (Serial.available()) { activeMode = MODE_IDLE; }
+       if (Serial.available()) { stopActiveMode(); }
    }
 
     /* Process incoming commands. */
