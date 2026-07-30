@@ -69,6 +69,10 @@ int framesinbigrecordingbuffer = 0;
 enum Mode { MODE_IDLE, MODE_RX, MODE_JAM, MODE_REC, MODE_CHAT, MODE_SCAN, MODE_SNIFF, MODE_BRUTE };
 Mode activeMode = MODE_IDLE;
 
+// scan mode state (serviced one frequency step per loop pass)
+float scanFrom = 0, scanTo = 0, scanCursor = 0;
+float scanBestFreq = 0;  int scanBestRssi = -100;  long scanCompare = 0;
+
 // human-readable name for /status
 static const char* modeName(void) {
     switch (activeMode) {
@@ -108,6 +112,7 @@ static void dumpBufferHex(int start, int count);
 static bool ingestHex(char *in, byte *out, int *outlen);
 static const char* modeName(void);
 static void exec(char *cmdline);
+static void serviceActiveMode(void);
 void setup();
 void loop();
 static void startAP(void);
@@ -261,14 +266,7 @@ static void exec(char *cmdline)
     byte j, k;
     uint32_t brute, poweroftwo;
     float settingf1;
-    float settingf2;
-    // variables for frequency scanner
-    float freq;
-    long compare_freq = 0;
-    float mark_freq = 0;
-    int rssi;
-    int mark_rssi=-100;
-    
+
   // identification of the command & actions
       
     if (strcmp_P(command, PSTR("help")) == 0) {
@@ -598,69 +596,19 @@ static void exec(char *cmdline)
 
     // Handling SCAN command - frequency scanner by Little S@tan !
     } else if (strcmp_P(command, PSTR("scan")) == 0) {
-        settingf1 = atof(strsep(&cmdline, " "));
-        settingf2 = atof(cmdline);
+        scanFrom = atof(strsep(&cmdline, " "));
+        scanTo   = atof(cmdline);
         out->print(F("\r\nScanning frequency range from : "));
-        out->print(settingf1);
+        out->print(scanFrom);
         out->print(F(" MHz to "));
-        out->print(settingf2);
-        out->print(F(" MHz, press any key for stop or wait...\r\n"));  
-        // initialize parameters for scanning
+        out->print(scanTo);
+        out->print(F(" MHz, press any key for stop or wait...\r\n"));
         ELECHOUSE_cc1101.Init();
         ELECHOUSE_cc1101.setRxBW(58);
         ELECHOUSE_cc1101.SetRx();
-        // Do scanning until some key pressed
-        freq = settingf1;  // start frequency for scanning
-        mark_rssi=-100;   
-        while (!Serial.available())        
-          {
-            // feed the watchdog
-            ESP.wdtFeed();
-            yield();
-
-            ELECHOUSE_cc1101.setMHZ(freq);
-            rssi = ELECHOUSE_cc1101.getRssi();
-            if (rssi>-75)
-               {
-                    if (rssi > mark_rssi)
-                    {
-                          mark_rssi = rssi;  
-                          mark_freq = freq;
-                    };
-              };
-
-           freq+=0.01;
-
-           if (freq > settingf2)
-              {
-                   freq = settingf1;
-
-                   if (mark_rssi>-75)
-                    {
-                      long fr = mark_freq*100;
-                      if (fr == compare_freq)
-                          {
-                            out->print(F("\r\nSignal found at  "));
-                            out->print(F("Freq: "));
-                            out->print(mark_freq);
-                            out->print(F(" Rssi: "));
-                            out->println(mark_rssi);
-                            mark_rssi=-100;
-                            compare_freq = 0;
-                            mark_freq = 0;
-                          }
-                      else
-                          {
-                            compare_freq = mark_freq*100;
-                            freq = mark_freq -0.10;
-                            mark_freq=0;
-                            mark_rssi=-100;
-                          };
-                    };
-                    
-              }; // end of IF freq>stop frequency 
-              
-          };  // End of While 
+        scanCursor = scanFrom;
+        scanBestFreq = 0; scanBestRssi = RSSI_NONE; scanCompare = 0;
+        activeMode = MODE_SCAN;
 
 
     // handling SAVE command
@@ -1227,6 +1175,37 @@ static void exec(char *cmdline)
 }
 
 
+// Advance whichever long-running mode is active by one small slice.
+// Called every loop() pass. Keeps the web server responsive.
+static void serviceActiveMode(void)
+{
+    if (activeMode == MODE_SCAN) {
+        ELECHOUSE_cc1101.setMHZ(scanCursor);
+        int rssi = ELECHOUSE_cc1101.getRssi();
+        if (rssi > SCAN_RSSI_MARK && rssi > scanBestRssi) {
+            scanBestRssi = rssi; scanBestFreq = scanCursor;
+        }
+        scanCursor += 0.01;
+        if (scanCursor > scanTo) {
+            scanCursor = scanFrom;
+            if (scanBestRssi > SCAN_RSSI_MARK) {
+                long fr = scanBestFreq * 100;
+                if (fr == scanCompare) {
+                    out->print(F("\r\nSignal found at  "));
+                    out->print(F("Freq: "));  out->print(scanBestFreq);
+                    out->print(F(" Rssi: ")); out->println(scanBestRssi);
+                    scanBestRssi = RSSI_NONE; scanCompare = 0; scanBestFreq = 0;
+                } else {
+                    scanCompare = scanBestFreq * 100;
+                    scanCursor = scanBestFreq - 0.10;
+                    scanBestFreq = 0; scanBestRssi = RSSI_NONE;
+                }
+            }
+        }
+    }
+}
+
+
 void setup() {
 
      // initialize USB Serial Port CDC
@@ -1274,6 +1253,11 @@ void loop() {
 
    // service pending HTTP requests
    server.handleClient();
+
+   // any serial input stops a running background mode (preserves old UX)
+   if (activeMode == MODE_SCAN || activeMode == MODE_SNIFF || activeMode == MODE_BRUTE) {
+       if (Serial.available()) { activeMode = MODE_IDLE; }
+   }
 
     /* Process incoming commands. */
     while (Serial.available()) {
@@ -1471,8 +1455,11 @@ void loop() {
         yield();              
       };
 
+   // advance any active long-running mode by one slice
+   serviceActiveMode();
+
    // give control for other procedures in ESP8266
-   yield(); 
+   yield();
  
  
 }  // end of main LOOP

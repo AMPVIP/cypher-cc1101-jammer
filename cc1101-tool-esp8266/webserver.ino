@@ -13,9 +13,6 @@ class StringPrint : public Print {
     }
 };
 
-// Temporary stub (replaced in Task 5). Remove when that lands.
-float scanBestFreq = 0; int scanBestRssi = -100;
-
 // Bring up the SoftAP with the configured static IP.
 static void startAP(void)
 {
