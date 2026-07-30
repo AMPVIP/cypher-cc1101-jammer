@@ -75,6 +75,10 @@ float scanBestFreq = 0;  int scanBestRssi = -100;  long scanCompare = 0;
 
 int sniffInterval = 0;   // microseconds per sample while MODE_SNIFF is active
 
+// brute mode state (a batch of codes serviced per loop pass)
+int bruteInterval = 0, bruteBits = 0;
+uint32_t bruteCode = 0, bruteMax = 0;
+
 // human-readable name for /status
 static const char* modeName(void) {
     switch (activeMode) {
@@ -267,7 +271,6 @@ static void exec(char *cmdline)
     char *command = strsep(&cmdline, " ");
     int setting, setting2, len;
     byte j, k;
-    uint32_t brute, poweroftwo;
     float settingf1;
 
   // identification of the command & actions
@@ -683,54 +686,20 @@ static void exec(char *cmdline)
     
     // handling BRUTE command
     } else if (strcmp_P(command, PSTR("brute")) == 0) {
-      
-        // take interval period for sampling
-        setting = atoi(strsep(&cmdline, " "));
-        // take number of bits for brute forcing
-        setting2 = atoi(cmdline);
-        // calculate power of 2 upon setting (guard the shift: 1..16 bits;
-        // counters are 32-bit so 2^16 fits and the loop runs to completion)
-        if (setting2 > 16) setting2 = 16;
-        poweroftwo = (setting2 > 0) ? (1UL << setting2) : 0;
+        bruteInterval = atoi(strsep(&cmdline, " "));
+        bruteBits     = atoi(cmdline);
+        if (bruteBits > 16) bruteBits = 16;
+        bruteMax = (bruteBits > 0) ? (1UL << bruteBits) : 0;
+        if ((bruteInterval > 0) && (bruteBits > 0)) {
+            enterRawMode(true);
+            out->print(F("\r\nStarting Brute Forcing press any key to stop...\r\n"));
+            pinMode(gdo0, OUTPUT);
+            bruteCode = 0;
+            activeMode = MODE_BRUTE;
+        }
+        else { out->print(F("Wrong parameters.\r\n")); }
 
-        if ((setting>0) && (setting2>0))
-        {
-        // setup async mode on CC1101 and go into TX mode with GDO0 processing
-        enterRawMode(true);
-
-        //start playing RF with setting GDO0 bit state with bitbanging
-        out->print(F("\r\nStarting Brute Forcing press any key to stop...\r\n"));
-        pinMode(gdo0, OUTPUT);
-
-        for (brute = 0; brute < poweroftwo ; brute++)  
-           { 
-           for(int k = 0; k <  5; k++)  // sending 5 times each code
-             {
-             for(int j = (setting2 - 1); j > -1; j--)  // j bits in a value brute
-               {
-                 digitalWrite(gdo0, bitRead(brute, j)); // Set GDO0 according to actual brute force value
-                 delayMicroseconds(setting);            // delay for selected sampling interval
-               }; // end of J loop
-               // watchdog
-               yield(); 
-               // feed the watchdog in ESP8266
-               ESP.wdtFeed();                    
-             };  // end of K loop
-             // checking if key pressed
-             if (Serial.available()) break;
-           };           
-
-        out->print(F("\r\nBrute forcing complete.\r\n\r\n"));
-
-        // setting normal pkt format again
-        exitRawMode(true);
-        } // end of IF
-
-        else { out->print(F("Wrong parameters.\r\n")); };
-
-  
-
-    // Handling TX command         
+    // Handling TX command
        } else if (strcmp_P(command, PSTR("tx")) == 0) {
         // convert hex array to set of bytes
         if ( ingestHex(cmdline, ccsendingbuffer, &len) )
@@ -1145,6 +1114,7 @@ static void exec(char *cmdline)
 // stop the active mode and restore normal packet mode if it was a raw mode
 static void stopActiveMode(void) {
     if (activeMode == MODE_SNIFF) exitRawMode(false);
+    if (activeMode == MODE_BRUTE) exitRawMode(true);
     activeMode = MODE_IDLE;
 }
 
@@ -1189,6 +1159,24 @@ static void serviceActiveMode(void)
             ESP.wdtFeed();
         }
         dumpBufferHex(0, RECORDINGBUFFERSIZE);
+    }
+    else if (activeMode == MODE_BRUTE) {
+        // send a batch of codes this pass (each code 5x), keep timing tight
+        const uint32_t BATCH = 64;
+        for (uint32_t n = 0; n < BATCH && bruteCode < bruteMax; n++, bruteCode++) {
+            for (int k = 0; k < 5; k++) {
+                for (int j = bruteBits - 1; j > -1; j--) {
+                    digitalWrite(gdo0, bitRead(bruteCode, j));
+                    delayMicroseconds(bruteInterval);
+                }
+                ESP.wdtFeed();
+            }
+        }
+        if (bruteCode >= bruteMax) {
+            out->print(F("\r\nBrute forcing complete.\r\n\r\n"));
+            exitRawMode(true);
+            activeMode = MODE_IDLE;
+        }
     }
 }
 
