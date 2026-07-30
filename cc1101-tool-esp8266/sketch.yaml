@@ -1,0 +1,9 @@
+profiles:
+  d1mini:
+    fqbn: esp8266:esp8266:d1_mini
+    platforms:
+      - platform: esp8266:esp8266 (3.1.2)
+        platform_index_url: https://arduino.esp8266.com/stable/package_esp8266com_index.json
+    libraries:
+      - SmartRC-CC1101-Driver-Lib (2.5.7)
+default_profile: d1mini
