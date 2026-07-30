@@ -65,11 +65,19 @@ int bigrecordingbufferpos = 0;
 // number of frames in big recording buffer
 int framesinbigrecordingbuffer = 0; 
 
-// CLI activity flags (exactly one active at a time)
-bool receivingmode = false;
-bool jammingmode = false;
-bool recordingmode = false;
-bool chatmode = false;
+// CLI activity: exactly one mode active at a time.
+enum Mode { MODE_IDLE, MODE_RX, MODE_JAM, MODE_REC, MODE_CHAT, MODE_SCAN, MODE_SNIFF, MODE_BRUTE };
+Mode activeMode = MODE_IDLE;
+
+// human-readable name for /status
+static const char* modeName(void) {
+    switch (activeMode) {
+        case MODE_RX: return "rx";        case MODE_JAM: return "jam";
+        case MODE_REC: return "rec";      case MODE_CHAT: return "chat";
+        case MODE_SCAN: return "scan";    case MODE_SNIFF: return "sniff";
+        case MODE_BRUTE: return "brute";  default: return "idle";
+    }
+}
 
 static bool do_echo = true;
 
@@ -98,6 +106,7 @@ static void enterRawMode(bool tx);
 static void exitRawMode(bool tx);
 static void dumpBufferHex(int start, int count);
 static bool ingestHex(char *in, byte *out, int *outlen);
+static const char* modeName(void);
 static void exec(char *cmdline);
 void setup();
 void loop();
@@ -700,46 +709,25 @@ static void exec(char *cmdline)
     // Handling RX command         
        } else if (strcmp_P(command, PSTR("rx")) == 0) {
         out->print(F("\r\nReceiving and printing RF packet changed to "));
-        if (receivingmode == 1) {
-          receivingmode = 0;
-          out->print(F("Disabled")); }
-        else if (receivingmode == 0)
-               { ELECHOUSE_cc1101.SetRx();
-                 out->print(F("Enabled")); 
-                 receivingmode = 1;
-                 jammingmode = 0; 
-                 recordingmode = 0;
-               };
-        out->print(F("\r\n")); 
+        if (activeMode == MODE_RX) { activeMode = MODE_IDLE; out->print(F("Disabled")); }
+        else { ELECHOUSE_cc1101.SetRx(); out->print(F("Enabled")); activeMode = MODE_RX; }
+        out->print(F("\r\n"));
         yield();
- 
 
-    // Handling CHAT command         
+
+    // Handling CHAT command
        } else if (strcmp_P(command, PSTR("chat")) == 0) {
         out->print(F("\r\nEntering chat mode:\r\n\r\n"));
-        if (chatmode == 0) 
-           { 
-             chatmode = 1;
-             jammingmode = 0;
-             receivingmode = 0;
-             recordingmode = 0;
-           };
+        activeMode = MODE_CHAT;
         yield();
- 
 
-    // Handling JAM command         
+
+    // Handling JAM command
        } else if (strcmp_P(command, PSTR("jam")) == 0) {
         out->print(F("\r\nJamming changed to "));
-        if (jammingmode == 1) 
-           { out->print(F("Disabled")); 
-             jammingmode = 0;
-           }
-        else if (jammingmode == 0) 
-               { 
-                 out->print(F("Enabled")); 
-                 jammingmode = 1;
-                 receivingmode = 0; };
-        out->print(F("\r\n")); 
+        if (activeMode == MODE_JAM) { out->print(F("Disabled")); activeMode = MODE_IDLE; }
+        else { out->print(F("Enabled")); activeMode = MODE_JAM; }
+        out->print(F("\r\n"));
         yield();
     
     // handling BRUTE command
@@ -1076,24 +1064,15 @@ static void exec(char *cmdline)
     // Handling REC command         
     } else if (strcmp_P(command, PSTR("rec")) == 0) {
         out->print(F("\r\nRecording mode set to "));
-        if (recordingmode == 1) 
-            { 
-               out->print(F("Disabled")); 
-               bigrecordingbufferpos = 0; 
-               recordingmode = 0;
-            }
-        else if (recordingmode == 0)
-            {  ELECHOUSE_cc1101.SetRx();
-               out->print(F("Enabled"));
-               // flush buffer for recording (rewinds pos + frame count too)
-               zeroRecordingBuffer();
-               recordingmode = 1;
-               jammingmode = 0;
-               receivingmode = 0;
-               };
-        out->print(F("\r\n")); 
-        // needed for ESP8266   
-        yield();      
+        if (activeMode == MODE_REC) {
+            out->print(F("Disabled")); bigrecordingbufferpos = 0; activeMode = MODE_IDLE;
+        } else {
+            ELECHOUSE_cc1101.SetRx(); out->print(F("Enabled"));
+            zeroRecordingBuffer();
+            activeMode = MODE_REC;
+        }
+        out->print(F("\r\n"));
+        yield();
  
 
     // Handling PLAY command         
@@ -1226,12 +1205,10 @@ static void exec(char *cmdline)
     // Handling X command         
     // command 'x' stops jamming, receiveing, recording...
     } else if (strcmp_P(command, PSTR("x")) == 0) {
-        receivingmode = 0;
-        jammingmode = 0;
-        recordingmode = 0;
+        activeMode = MODE_IDLE;
         out->print(F("\r\n"));
-        // needed for ESP8266   
-        yield();      
+        // needed for ESP8266
+        yield();
 
     // Handling INIT command         
     // command 'init' initializes board with default settings
@@ -1305,8 +1282,8 @@ void loop() {
 
 
     // handling CHAT MODE     
-    if (chatmode == 1) 
-       { 
+    if (activeMode == MODE_CHAT)
+       {
             
             // clear serial port buffer index
             i = 0;
@@ -1384,7 +1361,8 @@ void loop() {
   /* Process RF received packets */
    
    //Checks whether something has been received.
-  if (ELECHOUSE_cc1101.CheckReceiveFlag() && (receivingmode == 1 || recordingmode == 1 || chatmode == 1) )
+  if (ELECHOUSE_cc1101.CheckReceiveFlag() &&
+      (activeMode == MODE_RX || activeMode == MODE_REC || activeMode == MODE_CHAT) )
       {
 
        //CRC Check. If "setCrc(false)" crc returns always OK!
@@ -1397,7 +1375,7 @@ void loop() {
             int len = ELECHOUSE_cc1101.ReceiveData(ccreceivingbuffer);
 
             // Actions for CHAT MODE
-            if ( ( chatmode == 1) && (len < CCBUFFERSIZE ) )
+            if ( (activeMode == MODE_CHAT) && (len < CCBUFFERSIZE ) )
                {
                 // put NULL at the end of char buffer
                 ccreceivingbuffer[len] = '\0';
@@ -1411,7 +1389,7 @@ void loop() {
                };  // end of handling Chat mode
 
             // Actions for RECEIVNG MODE
-            if ( ((receivingmode == 1) && (recordingmode == 0))&& (len < CCBUFFERSIZE ) )
+            if ( (activeMode == MODE_RX) && (len < CCBUFFERSIZE ) )
                {
                    // put NULL at the end of char buffer
                    ccreceivingbuffer[len] = '\0';
@@ -1433,7 +1411,7 @@ void loop() {
                 };   // end of handling receiving mode 
 
             // Actions for RECORDING MODE               
-            if ( ((recordingmode == 1) && (receivingmode == 0) )&& (len < CCBUFFERSIZE ) )
+            if ( (activeMode == MODE_REC) && (len < CCBUFFERSIZE ) )
                { 
                 // copy the frame from receiving buffer for replay - only if it fits
                 if (( bigrecordingbufferpos + len + 1) < RECORDINGBUFFERSIZE) 
@@ -1460,7 +1438,7 @@ void loop() {
                     Serial.print(framesinbigrecordingbuffer); 
                     Serial.print(F("\r\n"));
                     bigrecordingbufferpos = 0;
-                    recordingmode = 0;
+                    activeMode = MODE_IDLE;
                     // feed the watchdog
                     ESP.wdtFeed();
                     // needed for ESP8266   
@@ -1475,7 +1453,7 @@ void loop() {
       };   // end of Check receive flag if
 
       // if jamming mode activate continously send something over RF...
-      if ( jammingmode == 1)
+      if ( activeMode == MODE_JAM )
       {
         // populate cc1101 sending buffer with random values (PRNG seeded in setup)
         for (i = 0; i<MAX_PAYLOAD; i++)

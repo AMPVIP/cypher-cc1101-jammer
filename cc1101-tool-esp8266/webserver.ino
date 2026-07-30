@@ -13,12 +13,7 @@ class StringPrint : public Print {
     }
 };
 
-// Temporary stubs (replaced in Task 4/5). Remove when those land.
-// modeName is a macro, not a function: Arduino's auto-prototype generator
-// mangles/misplaces prototypes for any function here that lacks a manual
-// forward declaration in the main sketch (see its "Forward declarations"
-// comment), and this stub isn't listed there since it is temporary.
-#define modeName() "idle"
+// Temporary stub (replaced in Task 5). Remove when that lands.
 float scanBestFreq = 0; int scanBestRssi = -100;
 
 // Bring up the SoftAP with the configured static IP.
