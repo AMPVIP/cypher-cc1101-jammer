@@ -217,6 +217,16 @@ int gdo2 = 4;     // GPIO 4
 
 ----
 
+### Web UI (AP mode)
+
+Flash `cc1101-tool-esp8266` and the board also creates its own WiFi Access Point, SSID `cc1101` / password `cc1101`.
+
+Join that network from your phone or laptop and browse to `http://192.168.1.100` for a web control panel - radio config, action buttons, buffer view, and a raw command console. The serial CLI still works at the same time.
+
+Build note: `arduino-cli compile --profile d1mini cc1101-tool-esp8266` auto-installs the pinned core and SmartRC library via `sketch.yaml`, as an alternative to the Arduino IDE steps above.
+
+----
+
 Example for Arduino Nano board - ATTENTION ! I HAVE TESTED THIS BOARD AND IT REQUIRES TTL LOGIC COVERTER 5V<->3.3V TXS0108E ESPECIALLY FOR BOARD CC1101 : E07-M1101D, otherwise it does not work
 
 #define RECORDINGBUFFERSIZE 1024   // Buffer for recording the frames

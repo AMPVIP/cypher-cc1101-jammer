@@ -45,6 +45,10 @@ The ESP8266 is single-core and heavily loaded by the WiFi/TCP-IP stack, so timin
 - A **software watchdog** is armed in `setup()` (`ESP.wdtEnable`) and must be fed (`ESP.wdtFeed()`) in `loop()`. Long-running or tight-timing code can trigger watchdog resets.
 - Always pass the `<microseconds>` argument to `rxraw`/`playraw`; omitting it can cause a stack overflow / reset on WiFi-enabled builds.
 - Default packet-mode data rate is 9.6 kBaud (raised from 1.2 kBaud specifically to avoid watchdog resets).
+- The primary sketch also runs a WiFi Access Point + web control panel: default AP SSID `cc1101`, password `cc1101`, UI at `http://192.168.1.100`. The web layer lives in `cc1101-tool-esp8266/webserver.ino` (Arduino concatenates it into the sketch at compile time).
+- The web UI reuses `exec()` for command execution by redirecting output through a global `Print* out` pointer, which becomes a String sink for the duration of each `/cmd` request instead of `Serial`.
+- `scan`, `rxraw` (sniffer), and `brute` are non-blocking background modes serviced one slice per `loop()` pass via `serviceActiveMode()`, gated by the single `activeMode` enum. This applies to serial too: those commands return to the prompt immediately and keep running in the background (stop with any key or `x`). `recraw`/`playraw` still run to completion (blocking).
+- Build with the pinned profile: `arduino-cli compile --profile d1mini cc1101-tool-esp8266`.
 
 ## Radio behavior notes
 
