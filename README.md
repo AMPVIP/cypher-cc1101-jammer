@@ -34,6 +34,17 @@ Full details in the [changelog](#-changelog) at the bottom.
 
 ---
 
+## 🔌 USB serial mode
+
+Plug the board into **USB** and drive it with a serial terminal at **115200 baud** — no WiFi needed. This works two ways:
+
+- **Computer** — PuTTY, `screen`, the Arduino IDE Serial Monitor, or any terminal. Ports: `/dev/ttyACM0` / `/dev/cu.*` on Linux/macOS, `COMxx` on Windows.
+- **Android phone (USB-OTG)** — plug the board into your phone and use a [USB serial terminal app](https://play.google.com/store/apps/details?id=de.kai_morich.serial_usb_terminal) for portable hacking.
+
+**Important:** set the terminal newline to **CR only** — extra LF characters can break commands like `rxraw` (in the Android app: Settings → Newline → CR). Send `help` for the command list, and run `init` after any RAW-mode operation.
+
+---
+
 ## 🌐 Web UI (AP mode)
 
 Flash the D1 Mini sketch and the board creates its own WiFi Access Point:
@@ -59,9 +70,7 @@ arduino-cli upload -p <PORT> --profile d1mini cc1101-tool-esp8266
 
 **With the Arduino IDE:** install the **SmartRC-CC1101-Driver-Lib** (ELECHOUSE fork by Little_S@tan — https://github.com/LSatan/SmartRC-CC1101-Driver-Lib), add ESP8266 board support, select the WEMOS D1 Mini, set CPU frequency to **160 MHz**, then compile & upload. A "Low Memory" warning is expected and harmless.
 
-**Connecting:** USB serial at **115200 baud** (`/dev/ttyACM0`/`/dev/cu.*` on Linux/macOS, `COMxx` on Windows), or the web UI above. Set the terminal newline to **CR only** — extra LF characters can break commands like `rxraw`. On Android you can drive it over USB-OTG with a [USB serial terminal app](https://play.google.com/store/apps/details?id=de.kai_morich.serial_usb_terminal) (set "Newline → CR only" in its settings).
-
-After any RAW-mode operation, run `init` to reset the chip.
+Once flashed, connect over [USB serial](#-usb-serial-mode) or the [Web UI](#-web-ui-ap-mode) above.
 
 ---
 
