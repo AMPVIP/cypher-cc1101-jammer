@@ -4,7 +4,9 @@
 
 ### Designed to also work with a flipper 
 
-### Make sure to flash the cc11001tool-esp8266.ino if using D1 Wemos Mini
+### Make sure to flash `cc1101-tool-esp8266/cc1101-tool-esp8266.ino` if using the WEMOS D1 Mini
+
+### 🆕 2026 update: the D1 Mini firmware now hosts its own WiFi Access Point + web control panel — join SSID `cc1101` (password `cc1101`) and open http://192.168.1.100. Serial CLI still works too. See the changelog at the bottom.
 
 ### Order my PCB from PCBWay & get a $10 coupon ^_^ : https://pcbway.com/g/87Pi52
 
@@ -365,7 +367,16 @@ Corrected bug in showbit() function, all the thanks go to  jps1x2.
 Corrected bug in scan() function (not accepting MHz fractions in frequency range), all the thanks go to chris4soft 
 
 
+31.07.2026 : Major refresh of the WEMOS D1 Mini (ESP8266) firmware
+- Made the sketch compile again on current toolchains (Arduino ESP8266 core 3.x / arduino-cli 1.x). The old CRLF line endings and a few non-ASCII characters were breaking the Arduino auto-prototype generator; the source is now plain ASCII/LF with explicit function prototypes.
+- Fixed memory-safety bugs: out-of-bounds writes in the hex conversion and in the REC buffer flush, chat/brute buffer overflows, an uninitialized SCAN comparison, and LOAD not rebuilding the frame count (so SHOW/PLAY work after LOAD again). Cleaned up and de-duplicated the command handling. The same build + out-of-bounds fixes were applied to every other board variant in `original_files/`.
+- Added a reproducible build profile: `arduino-cli compile --profile d1mini cc1101-tool-esp8266` (the `sketch.yaml` pins the ESP8266 core and auto-installs the SmartRC library) - an alternative to the Arduino IDE.
+- NEW - WiFi Access Point + web control panel. The board hosts its own AP (SSID `cc1101` / password `cc1101`) and serves a browser UI at http://192.168.1.100 with radio config, action buttons, a buffer viewer and a raw command console - all reusing the existing CLI. The USB serial console keeps working at the same time.
+- Made the long-running commands non-blocking so the web UI stays responsive: SCAN, RXRAW (sniffer) and BRUTE run as background modes (on serial they now return to the prompt immediately and keep running until you press any key or `x`). RECRAW and PLAYRAW became non-blocking background modes too - RECRAW no longer hangs forever waiting for a signal, and the web server stays responsive.
+- Fixed the long-standing "BRUTE sometimes hangs after the full cycle" bug: the RAW TX modes were leaving GDO0 driven as an OUTPUT against the CC1101 in packet mode (pin contention -> watchdog reset). GDO0 is now released back to INPUT on raw-mode exit, so single-cycle brute is reliable.
+
+
   
-Known Bugs : sometimes RX command does not work correctly after many big frames have been received (in packet mode, not in async mode). This may be due to some memory leak in SmartRC library. Still checking what is the reason. Keep attention to putting an argument <microseconds> to rxraw, playraw command - otherwise ESP8266 are restarting themselves when wifi in use (stack overflow).
+Known Bugs : sometimes RX command does not work correctly after many big frames have been received (in packet mode, not in async mode). This may be due to some memory leak in SmartRC library. Still checking what is the reason. Keep attention to putting an argument <microseconds> to rxraw, playraw command - otherwise ESP8266 are restarting themselves when wifi in use (stack overflow). On the ESP8266 WiFi/AP build, BRUTE with many bits (roughly 5+ / more than 16 codes) can still trigger a watchdog reset while the AP is running - a single-core WiFi vs. bit-bang timing limitation; small bit-counts are reliable.
     
     
