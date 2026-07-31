@@ -244,6 +244,10 @@ static void enterRawMode(bool tx)
 // restore CC1101 to normal packet mode after RAW record/replay
 static void exitRawMode(bool tx)
 {
+    // release GDO0: the TX raw modes (playraw/brute) drove it as an OUTPUT, but in
+    // packet mode the CC1101 owns that line. Leaving it forced (brute ends it HIGH)
+    // causes pin contention that hangs the next library call -> watchdog reset.
+    pinMode(gdo0, INPUT);
     ELECHOUSE_cc1101.setCCMode(1);
     ELECHOUSE_cc1101.setPktFormat(0);
     if (tx) ELECHOUSE_cc1101.SetTx(); else ELECHOUSE_cc1101.SetRx();
