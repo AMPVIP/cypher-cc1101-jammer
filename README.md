@@ -1,382 +1,285 @@
-# Cypher CC1101 Jammer PCB files & schematics.
+# Cypher CC1101 Jammer — PCB & Firmware
+
+**Open-source sub-GHz RF pentesting device** built around a **WEMOS D1 Mini (ESP8266)** and a **CC1101** radio module. A YardStick-One-like serial CLI for scanning, transmitting, jamming, brute-forcing, and RAW record/replay of sub-GHz signals — plus a browser control panel. Works alongside a Flipper Zero.
 
-### Open-source RF Pentesting Device using WEMOS D1 Mini ESP8266 & a CC1101 Module
+> 🛠️ Flash [`cc1101-tool-esp8266/cc1101-tool-esp8266.ino`](cc1101-tool-esp8266/cc1101-tool-esp8266.ino) if you're using the WEMOS D1 Mini.
+>
+> 🔗 Order my PCB from PCBWay & get a $10 coupon ^_^ : https://pcbway.com/g/87Pi52
 
-### Designed to also work with a flipper 
+<table>
+  <tr>
+    <td><img src="device_img/cypher_c11011.JPG" alt="Cypher CC1101 device" width="260"></td>
+    <td><img src="device_img/cypher_c11012.JPG" alt="Cypher CC1101 device" width="260"></td>
+    <td><img src="device_img/cypher_c11013.JPG" alt="Cypher CC1101 device" width="260"></td>
+  </tr>
+  <tr>
+    <td><img src="device_img/cypher_c11014.JPG" alt="Cypher CC1101 device" width="260"></td>
+    <td><img src="device_img/cypher_c11015.JPG" alt="Cypher CC1101 device" width="260"></td>
+    <td valign="middle"><img src="Esp8266_CC1101.png" alt="ESP8266 + CC1101 wiring" width="260"></td>
+  </tr>
+</table>
+
+---
+
+## 🆕 What's new (2026)
+
+A major refresh of the WEMOS D1 Mini firmware:
+
+- **🌐 WiFi Access Point + web control panel** — the board hosts its own AP and serves a browser UI with radio config, action buttons, a buffer viewer, and a raw command console. The USB serial CLI keeps working at the same time.
+- **⚡ Responsive, non-blocking modes** — `scan`, `sniff` (rxraw), `brute`, `recraw` and `playraw` now run as background modes, so the web UI no longer freezes and `recraw` no longer hangs waiting for a signal.
+- **🔧 Builds on modern toolchains again** — the sketch compiles cleanly on the current Arduino ESP8266 core / `arduino-cli`, with a pinned `sketch.yaml` build profile.
+- **🐞 Bug fixes** — out-of-bounds writes, chat/brute overflows, `load` frame-count restore, and the long-standing *"brute hangs after the full cycle"* GDO0 pin-contention bug (single-cycle brute is reliable now). Same build + safety fixes applied to every board variant in `original_files/`.
+
+Full details in the [changelog](#-changelog) at the bottom.
+
+---
+
+## 🌐 Web UI (AP mode)
+
+Flash the D1 Mini sketch and the board creates its own WiFi Access Point:
+
+| | |
+|---|---|
+| **SSID** | `cc1101` |
+| **Password** | `cc1101` |
+| **URL** | http://192.168.1.100 |
+
+Join that network from your phone or laptop and open the URL for a control panel — radio config, action buttons, buffer view, and a raw command console (everything reuses the same CLI). The USB serial console works at the same time. Tip: run the ESP8266 at **160 MHz** for best WiFi stability.
+
+---
+
+## ⚡ Build & flash
+
+**With `arduino-cli` (reproducible, recommended):** the pinned [`sketch.yaml`](cc1101-tool-esp8266/sketch.yaml) profile installs the ESP8266 core and the SmartRC library automatically.
+
+```bash
+arduino-cli compile --profile d1mini cc1101-tool-esp8266
+arduino-cli upload -p <PORT> --profile d1mini cc1101-tool-esp8266
+```
 
-### Make sure to flash `cc1101-tool-esp8266/cc1101-tool-esp8266.ino` if using the WEMOS D1 Mini
+**With the Arduino IDE:** install the **SmartRC-CC1101-Driver-Lib** (ELECHOUSE fork by Little_S@tan — https://github.com/LSatan/SmartRC-CC1101-Driver-Lib), add ESP8266 board support, select the WEMOS D1 Mini, set CPU frequency to **160 MHz**, then compile & upload. A "Low Memory" warning is expected and harmless.
 
-### 🆕 2026 update: the D1 Mini firmware now hosts its own WiFi Access Point + web control panel — join SSID `cc1101` (password `cc1101`) and open http://192.168.1.100. Serial CLI still works too. See the changelog at the bottom.
+**Connecting:** USB serial at **115200 baud** (`/dev/ttyACM0`/`/dev/cu.*` on Linux/macOS, `COMxx` on Windows), or the web UI above. Set the terminal newline to **CR only** — extra LF characters can break commands like `rxraw`. On Android you can drive it over USB-OTG with a [USB serial terminal app](https://play.google.com/store/apps/details?id=de.kai_morich.serial_usb_terminal) (set "Newline → CR only" in its settings).
 
-### Order my PCB from PCBWay & get a $10 coupon ^_^ : https://pcbway.com/g/87Pi52
+After any RAW-mode operation, run `init` to reset the chip.
 
-<img src="device_img/cypher_c11012.JPG" alt="Wifi and Bluetooth jammer made with an esp32 and nrf24l01+pa+lna modules." width="400" height="600">
-<img src="device_img/cypher_c11011.JPG" alt="Wifi and Bluetooth jammer made with an esp32 and nrf24l01+pa+lna modules." width="400" >
-<img src="device_img/cypher_c11013.JPG" alt="Wifi and Bluetooth jammer made with an esp32 and nrf24l01+pa+lna modules." width="400" height="600">
-<img src="device_img/cypher_c11014.JPG" alt="Wifi and Bluetooth jammer made with an esp32 and nrf24l01+pa+lna modules." width="400" height="600">
-<img src="device_img/cypher_c11015.JPG" alt="Wifi and Bluetooth jammer made with an esp32 and nrf24l01+pa+lna modules." width="400" height="600">
+---
+
+## 📟 Command reference
+
+<details>
+<summary><b>Radio configuration</b></summary>
+
+| Command | Description |
+|---------|-------------|
+| `setmodulation <mode>` | 0 = 2-FSK, 1 = GFSK, 2 = ASK/OOK, 3 = 4-FSK, 4 = MSK |
+| `setmhz <frequency>` | Base frequency (default 433.92). CC1101 bands: 300–348, 387–464, 779–928 MHz |
+| `setdeviation <kHz>` | Frequency deviation, 1.58–380.85 kHz (default 47.60) |
+| `setchannel <0-255>` | Channel number (default 0) |
+| `setchsp <spacing>` | Channel spacing in kHz, 25.39–405.45 (default 199.95) |
+| `setrxbw <kHz>` | Receive bandwidth, 58.03–812.50 kHz (default 812.50) |
+| `setdrate <kBaud>` | Data rate, 0.02–1621.83 kBaud |
+| `setpa <dBm>` | TX power: -30 -20 -15 -10 -6 0 5 7 10 11 12 (default max) |
+| `setsyncmode <0-7>` | Sync-word qualifier mode (0 = none … 7 = 30/32 + carrier-sense) |
+| `setsyncword <LOW HIGH>` | Sync word (must match transmitter & receiver) |
+| `setadrchk <0-3>` | Address-check config for received packets |
+| `setaddr <address>` | Address used for packet filtration (broadcast: 0x00 / 0xFF) |
+| `setwhitedata <0/1>` | Data whitening off / on |
+| `setpktformat <0-3>` | 0 = FIFO, 1 = sync serial, 2 = random TX (PN9), 3 = async serial |
+| `setlengthconfig <0-3>` | 0 = fixed, 1 = variable, 2 = infinite length mode |
+| `setpacketlength <n>` | Packet length (fixed mode) / max length (variable mode) |
+| `setcrc <0/1>` | CRC calculation/check off / on |
+| `setcrcaf <0/1>` | Auto-flush RX FIFO on bad CRC |
+| `setdcfilteroff <0/1>` | Digital DC blocking filter (only for data rates ≤ 250 kBaud) |
+| `setmanchester <0/1>` | Manchester encoding/decoding off / on |
+| `setfec <0/1>` | Forward Error Correction off / on (fixed length only) |
+| `setpre <0-7>` | Minimum preamble bytes (0:2 … 7:24) |
+| `setpqt <mode>` | Preamble quality estimator threshold |
+| `setappendstatus <0/1>` | Append RSSI/LQI/CRC status bytes to payload |
+| `getrssi` | Show radio quality info for the last received frame |
+
+</details>
+
+<details>
+<summary><b>Actions</b></summary>
 
+| Command | Description |
+|---------|-------------|
+| `scan <start> <end>` | Scan a frequency range for the strongest signal (background mode) |
+| `rx` | Enable/disable printing of received RF packets |
+| `tx <hex-vals>` | Send a packet (max 60 bytes) of hex values over RF |
+| `jam` | Enable/disable continuous jamming on the selected band |
+| `brute <usec> <bits>` | Brute-force a DIP-switch gate: `<bits>` code, `<usec>` symbol length (background mode) |
+| `chat` | Switch the device into IRC-like chat mode (disconnect to quit) |
+| `x` | Stop jamming / receiving / recording / any background mode |
+| `init` | Restart the CC1101 with default parameters |
 
-# cc1101-tool
-RF tool based on CC1101 module and Arduino Pro Micro 8VMHz/3.3V. Allows using CLI to control CC1101 board over USB interface. Putty or any other serial terminal can be used. It has similar functionality to YardStick One but is cheaper and does not need specialized software. Allows for RF jamming and replay attacks as well. It has RAW  recording/replaying function which works exactly the same as in the Flipper Zero. Additional function is Radio Chat communicator
+</details>
 
-You simply connect your Arduino Pro Micro (Arduino Leonardo clone from Sparkfun) to USB port of your PC and launch Putty terminal to communicate with CC1101 module over USB Serial port ( /dev/ttyACM0 port in Linux, COMxx in Windows).
+<details>
+<summary><b>Frame record / replay</b></summary>
 
-Also you may connect this device to Android OTG USB port in your smartphone for portable hacking and use USB Serial Terminal application with option CDC driver set to communicate with the device ( app : https://play.google.com/store/apps/details?id=de.kai_morich.serial_usb_terminal  ). When using Serial Terminal app on Android first go to the Settings in the app on your smartphone then upper side of the screen select "Send" and then set "Newline" as CR only. It is sending to many characters to the device and  extra character of Newline sometimes stops some of commands like "rxraw" for example.
+| Command | Description |
+|---------|-------------|
+| `rec` | Enable/disable recording received frames into the buffer |
+| `show` | Show the contents of the recording buffer |
+| `add <hex-vals>` | Manually add a single frame (max 60 hex values) to the buffer |
+| `flush` | Clear the recording buffer |
+| `play <N>` | Replay frame N (or 0 for all recorded frames) |
+| `save` | Store the recording buffer in non-volatile memory |
+| `load` | Load the recording buffer back from non-volatile memory |
 
-Following commands are available :
+</details>
 
-    setmodulation <mode>         // set modulation mode. 0 = 2-FSK, 1 = GFSK, 2 = ASK/OOK, 3 = 4-FSK, 4 = MSK. 
-    
-    setmhz <frequency>           // Here you can set your basic frequency. default = 433.92).The cc1101 can: 300-348 MHZ, 387-464MHZ and 779-928MHZ.
-    
-    setdeviation <deviation>     // Set the Frequency deviation in kHz. Value from 1.58 to 380.85. Default is 47.60 kHz.
-    
-    setchannel <channel>         // Set the Channelnumber from 0 to 255. Default is channel 0.
-    
-    setchsp <spacing>            // The channel spacing is multiplied by the channel number CHAN and added to the base frequency in kHz. Value from 25.39 to 405.45. Default is 199.95 kHz. 
-    
-    setrxbw <Receive bandwidh>   // Set the Receive Bandwidth in kHz. Value from 58.03 to 812.50. Default is 812.50 kHz.
-    
-    setdrate <datarate>          // Set the Data Rate in kBaud. Value from 0.02 to 1621.83. Default is 99.97 kBaud!
-    
-    setpa <power value>          // Set TxPower. The following settings are possible depending on the frequency band.  (-30  -20  -15  -10  -6    0    5    7    10   11   12) Default is max!
-    
-    setsyncmode  <sync mode>     // Combined sync-word qualifier mode. 0 = No preamble/sync. 1 = 16 sync word bits detected. 2 = 16/16 sync word bits detected. 3 = 30/32 sync word bits detected. 4 = No preamble/sync, carrier-sense above threshold. 5 = 15/16 + carrier-sense above threshold. 6 = 16/16 + carrier-sense above threshold. 7 = 30/32 + carrier-sense above threshold.
-    
-    setsyncword <LOW, HIGH>      // Set sync word. Must be the same for the transmitter and receiver. (Syncword high, Syncword low)
-    
-    setadrchk <address check>    // Controls address check configuration of received packages. 0 = No address check. 1 = Address check, no broadcast. 2 = Address check and 0 (0x00) broadcast. 3 = Address check and 0 (0x00) and 255 (0xFF) broadcast.
-    
-    setaddr <address>            // Address used for packet filtration. Optional broadcast addresses are 0 (0x00) and 255 (0xFF).
+<details>
+<summary><b>RAW record / replay (Flipper-style, URH-compatible)</b></summary>
 
-    setwhitedata <whitening>     // Turn data whitening on / off. 0 = Whitening off. 1 = Whitening on.
-    
-    setpktformat <pkt format>    // Format of RX and TX data. 0 = Normal mode, use FIFOs for RX and TX. 1 = Synchronous serial mode, Data in on GDO0 and data out on either of the GDOx pins. 2 = Random TX mode; sends random data using PN9 generator. Used for test. Works as normal mode, setting 0 (00), in RX. 3 = Asynchronous serial mode, Data in on GDO0 and data out on either of the GDOx pins.
-    
-    setlengthconfig <mode>       // 0 = Fixed packet length mode. 1 = Variable packet length mode. 2 = Infinite packet length mode. 3 = Reserved 
-    
-    setpacketlength <mode>       // Indicates the packet length when fixed packet length mode is enabled. If variable packet length mode is used, this value indicates the maximum packet length allowed.
-    
-    setcrc <mode>                // 1 = CRC calculation in TX and CRC check in RX enabled. 0 = CRC disabled for TX and RX.
+| Command | Description |
+|---------|-------------|
+| `rxraw <usec>` | Sniff the radio at `<usec>` sampling interval and print hex (background mode) |
+| `recraw <usec>` | Record RAW RF data at `<usec>` sampling interval (starts on signal) |
+| `playraw <usec>` | Replay recorded RAW RF data at `<usec>` sampling interval |
+| `addraw <hex-vals>` | Manually add RAW chunks (max 60 hex values) to the buffer |
+| `showraw` | Show the recording buffer in RAW hex format |
+| `showbit` | Show the recording buffer as a stream of bits |
+| `echo <0/1>` | Enable/disable command echo on the serial terminal |
 
-    setcrcaf <mode>             // Enable automatic flush of RX FIFO when CRC is not OK. This requires that only one packet is in the RXIFIFO and that packet length is limited to the RX FIFO size.
+RAW bit order matches [Universal Radio Hacker](https://github.com/jopohl/urh). Always pass the `<microseconds>` argument to `rxraw`/`playraw` on ESP8266 WiFi builds. Run `init` after any RAW operation.
 
-    setdcfilteroff <mode>        // Disable digital DC blocking filter before demodulator. Only for data rates ≤ 250 kBaud The recommended IF frequency changes when the DC blocking is disabled. 1 = Disable (current optimized). 0 = Enable (better sensitivity).
+</details>
 
-    setmanchester <mode>         // Enables Manchester encoding/decoding. 0 = Disable. 1 = Enable.
+The firmware uses the **SmartRC** library (modified ELECHOUSE library by Little_S@tan) so every transmission parameter is settable in human-readable form without SmartRF Studio: https://github.com/LSatan/SmartRC-CC1101-Driver-Lib
 
-    setfec <mode>                // Enable Forward Error Correction (FEC) with interleaving for packet payload (Only supported for fixed packet length mode. 0 = Disable. 1 = Enable.
+---
 
-    setpre <mode>                // Sets the minimum number of preamble bytes to be transmitted. Values: 0 : 2, 1 : 3, 2 : 4, 3 : 6, 4 : 8, 5 : 12, 6 : 16, 7 : 24
+## 🔌 Wiring & porting
 
-    setpqt <mode>                // Preamble quality estimator threshold. The preamble quality estimator increases an internal counter by one each time a bit is received that is different from the previous bit, and decreases the counter by 8 each time a bit is received that is the same as the last bit. A threshold of 4∙PQT for this counter is used to gate sync word detection. When PQT=0 a sync word is always accepted.
+The CC1101 requires **3.3 V VCC and 3.3 V TTL logic**. 5 V boards (e.g. Arduino Nano) need a **TXS0108E** level shifter or you will fry the CC1101.
 
-    setappendstatus <mode>       // When enabled, two status bytes will be appended to the payload of the packet. The status bytes contain RSSI and LQI values, as well as CRC OK.
+<details>
+<summary><b>Arduino Pro Micro (3.3V / 8MHz) reference wiring</b></summary>
 
-    getrssi                      // Shows radio quality information about last received RF data frame.
-    
-    scan <start freq> <end freq> // Scan frequency range for the highest signal and display results
+| Pro Micro pin | CC1101 |
+|---|---|
+| D3 (PD0 / INT0) | GDO0 |
+| D9 (PB5) | GDO2 |
+| D10 (PB6) | CSN / SS |
+| D16 (PB2 / MOSI) | MOSI / SI |
+| D14 (PB3 / MISO) | MISO / SO |
+| D15 (PB1 / SCK) | SCLK / CLK |
+| VCC 3.3V | VCC |
+| GND | GND |
 
-    rx                           // Enable or disable printing of received RF packets on serial terminal.
+The Pro Micro must support **3.3 V VCC and 3.3 V TTL logic** ([SparkFun setup guide](https://learn.sparkfun.com/tutorials/pro-micro--fio-v3-hookup-guide/all)). Upload trouble? Right after pressing **Upload**, short GND+RST twice within a few seconds to trigger the bootloader.
 
-    tx  <hex-vals>               // Send the packet of max 60 bytes < hex values > hex values over RF 
+</details>
 
-    jam                          // Enable or disable continous jamming on selected band with selected modulation etc... 
+<details>
+<summary><b>Pin maps & buffer sizes for other boards</b></summary>
 
-    brute <usec> <nb-of-bits>    // Brute force garage gate with <number-of-bits> keyword where symbol length is <microseconds>
+To use a different board, change the pin assignment and buffer/EEPROM sizes at the top of the sketch.
 
-    rec                          // Enable or disable recording frames in the buffer.
-    
-    show                         // Show content of recording buffer
-    
-    add <hex-vals>               // Manually add single frame payload (max 60 hex values) to the buffer so it can be replayed
-    
-    flush                        // Clear the recording buffer
+| Signal | ESP32 | XIAO ESP32-C3 | WEMOS D1 Mini | Arduino Nano | RP2040 / Pico |
+|--------|:-----:|:-------------:|:-------------:|:------------:|:-------------:|
+| `sck`  | 18 | 8  | 14 | 16 (D13) | 2 |
+| `miso` | 19 | 4  | 12 | 15 (D12) | 4 |
+| `mosi` | 23 | 10 | 13 | 14 (D11) | 3 |
+| `ss`   | 5  | 20 | 15 | 13 (D10) | 5 |
+| `gdo0` | 2  | 21 | 5  | 9 (D6)   | 7 |
+| `gdo2` | 4  | 7  | 4  | 5 (D2)   | 6 |
+| `RECORDINGBUFFERSIZE` | 4096 | 4096 | 4096 | 1024 | 4096 |
+| `EPROMSIZE` | 512 | 512 | 4096 | 1024 | 512 |
 
-    play <N>                     // Replay 0 = all frames or N-th recorded frame
+- **XIAO ESP32-C3:** cheap green D-SUN CC1101 boards may need cable shielding on GDO0, otherwise `rxraw`/`recraw` catch noise like `FF`.
+- **Arduino Nano:** tested and **requires** a TXS0108E 5V↔3.3V level converter (especially for the E07-M1101D CC1101).
+- **RP2040 / Pico:** tested, uses 3.3 V logic ([pinout](https://cdn-learn.adafruit.com/assets/assets/000/099/339/original/raspberry_pi_Pico-R3-Pinout-narrow.png)).
 
-    rxraw <microseconds>         // Sniffs radio by sampling with <microsecond> interval and prints received bytes in hex
+Older separate WiFi variants (telnet client / telnet AP) also live in [`original_files/`](original_files/).
 
-    addraw <hex-vals>            // Manually add chunks (max 60 hex values) to the buffer so they can be further replayed.
+</details>
 
-    recraw <microseconds>        // Recording RAW RF data with <microsecond> sampling interval
-    
-    showraw                      // Showing content of recording buffer in RAW format
+---
 
-    showbit                      // Showing content of recording buffer in RAW format as a stream of bits.
+## 📺 Videos
 
-    playraw <microseconds>       // Replaying previously recorded RAW RF data with <microsecond> sampling interval
+- First version of the project: https://youtu.be/iPVckkTjsd0
+- Using Universal Radio Hacker with the CC1101-tool: https://youtu.be/mdkEK_wmWJA
 
-    save                         // Store recording buffer content in non-volatile memory
-    
-    load                         // Load the content from non-volatile memory to the recording buffer
+---
 
-    echo <mode>                  // Enable or disable Echo on serial terminal. 1 = enabled, 0 = disabled
-    
-    chat                         // switching device into chat mode 
-    
-    x                            // Stops activities like jamming/receiving/recording packets
-    
-    init                         // Restarts CC1101 board with default parameters 
- 
-The code uses SmartRC library (modified Electrohouse library by Little_S@tan) which allows to customize ALL transmission parameters in human readable format without using SmartRF studio from TI (CC1101 parameter customization tool). To use it please download following ZIP library from following github link https://github.com/LSatan/SmartRC-CC1101-Driver-Lib and attach it to the script in Arduino IDE.
+## 📜 Changelog
 
-Arduino Pro Micro board ( ATMEGA32U4 chip ) must support 3.3Volt VCC and 3.3V TTL logic because this is required by CC1101 board, otherwise you will fry CC1101 chip. Please follow this guide to setup your Arduino environment for Arduino Pro Micro board : https://learn.sparkfun.com/tutorials/pro-micro--fio-v3-hookup-guide/all
+<details>
+<summary><b>2023 – 2024 history (click to expand)</b></summary>
 
-If you are having issues with uploading the code from Arduino IDE to the board, after pressing "Upload" in Arduino you have to immediatelly short GND+RST pins two times in few seconds. Then bootloader in Arduino Pro Micro will start (common issue) and upload will begin.
+**08.06.2023 — optimized CLI**
+- removed unnecessary parameters for RX, TX, JAM; renamed JAMM → JAM
+- RX now prints hex values directly with no description when the sniffer is enabled
+- corrected CR/LF handling for the Android "Serial Terminal" app on USB OTG
+- added CHAT mode (IRC-like communicator between multiple devices)
 
-Connections to be made for ARDUINO PRO MICRO :
+**09.06.2023 — added RAW mode (Flipper-style)**
+- `rxraw`, `recraw`, `playraw`, `showraw` for record & replay attacks
+- recording buffer: 1536 bytes on ATMEGA32U4, 1024 on Mega/Uno/Nano, 4096+ on ESP32
+- always run `init` after RAW mode to restart the CC1101
 
-ARDUINO PRO MICRO 3.3V / 8MHz <-> CC1101 BOARD
+**10.06.2023**
+- added Arduino Mega/Nano/Uno version (requires TXS0108E level converter)
+- added ESP32 version
+- `recraw` now starts recording once something appears over the radio
+- added `addraw` to compose a signal in the buffer (e.g. hex chunks from URH)
+- added `scan <start> <end>` to find a peak frequency
 
-DIGITAL PIN 3 ( PD0 / INT0 ) <-> CC1101 GDO0
+**17.06.2023**
+- added `save`/`load` for the recorded-frames buffer to/from EEPROM
+- added `showbit` (RAW data as a bit stream)
+- fixed ESP32 `(char *)` vs `(byte *)` type issue
 
-DIGITAL PIN 9 ( PB5 ) <-> CC1101 GDO2
+**18.06.2023**
+- updated bit storage order in `playraw`/`rxraw`/`recraw` to match [URH](https://github.com/jopohl/urh)
 
-DIGITAL PIN 10 ( PB6 ) <-> CC1101 CSN / CS / SS
+**30.06.2023**
+- added CC1101 startup debug message
+- corrected EEPROM usage (ESP32 512 bytes, ESP8266 4096 bytes)
+- added ESP32-WROOM and ESP8266 WEMOS D1 Mini versions
 
-DIGITAL PIN 16 ( PB2 / MOSI ) <-> CC1101 MOSI / SI
+**08.07.2023**
+- ESP8266 WDT watchdog restarts mostly solved (single-core chip, heavy WiFi/TCP-IP load); tested on WEMOS D1 Mini clone + D-SUN CC1101
 
-DIGITAL PIN 14 ( PB3 / MISO ) <-> CC1101 MISO / SO
+**13.07.2023**
+- default packet-mode data rate 1.2 kBaud → 9.6 kBaud (fewer ESP8266 watchdog restarts)
 
-DIGITAL PIN 15 ( PB1 / SCK ) <-> CC1101 SCLK / CLK
+**27.07.2023** — added RP2040 board
 
-VCC 3.3V  <-> CC1101 VCC
+**18.08.2023** — added `brute <microseconds> <bits>` for DIP-switch gates. *(Sometimes the code hangs after a full brute cycle — root cause found and fixed in 2026, see below.)*
 
-GND <-> CC1101 GND
+**02.09.2023** — added ESP8266 WiFi **client** mode (separate source version) — telnet to the board via an intermediary access point to extend range. Set CPU to 160 MHz.
 
+**08.09.2023** — added ESP8266 WiFi **Access Point** mode (separate source version) — telnet to `192.168.1.100:23`, default SSID `cc1101`. Set CPU to 160 MHz.
 
-----
+**22.11.2023** — fixed `showbit()` bug (thanks jps1x2).
 
-If you want to use different Arduino Board, please change pin assignment in the beginning of the source code and adjust size of EEPROM/FLASH for storing recorded data  and size of SRAM memory
+**08.02.2024** — fixed `scan()` not accepting MHz fractions in the range (thanks chris4soft).
 
-----
+</details>
 
-Example for ESP32 board :
+**31.07.2026 — major refresh of the WEMOS D1 Mini (ESP8266) firmware**
+- **Builds again on current toolchains** (Arduino ESP8266 core 3.x / `arduino-cli` 1.x). Old CRLF line endings + non-ASCII characters were breaking the Arduino auto-prototype generator; the source is now ASCII/LF with explicit prototypes, plus a pinned `sketch.yaml` profile.
+- **Memory-safety & correctness fixes** — out-of-bounds writes in the hex conversion and the REC buffer flush, chat/brute overflows, an uninitialized SCAN comparison, and `load` not rebuilding the frame count (SHOW/PLAY work after LOAD again). Command handling de-duplicated. Same build + OOB fixes applied to every variant in `original_files/`.
+- **WiFi AP + web control panel** — see [Web UI](#-web-ui-ap-mode) above.
+- **Non-blocking long-running commands** — SCAN, RXRAW (sniffer), BRUTE, RECRAW and PLAYRAW run as background modes so the web UI stays responsive (and on serial they return to the prompt immediately, stopping on any key or `x`). RECRAW no longer hangs waiting for a signal.
+- **Fixed the "BRUTE hangs after the full cycle" bug** — the RAW TX modes left GDO0 driven as an OUTPUT against the CC1101 (pin contention → watchdog reset). GDO0 is now released to INPUT on raw-mode exit; single-cycle brute is reliable.
 
-#define RECORDINGBUFFERSIZE 4096   // Buffer for recording the frames
+---
 
-#define EPROMSIZE 512              // Size of EEPROM in your Arduino chip. For ESP32 it is Flash simulated 512 bytes only
+## ⚠️ Known issues
 
-// defining PINs set for ESP32 module
+- In packet mode, `rx` can misbehave after many large frames have been received — suspected memory leak in the SmartRC library.
+- Always pass the `<microseconds>` argument to `rxraw`/`playraw` on ESP8266 WiFi builds, otherwise the board can reset (stack overflow).
+- On the ESP8266 WiFi/AP build, `brute` with many bits (roughly 5+, i.e. more than 16 codes) can still trigger a watchdog reset while the AP is running — a single-core WiFi vs. bit-bang timing limitation. Small bit-counts are reliable.
 
-byte sck = 18;     //  GPIO 18
+---
 
-byte miso = 19;  //  GPIO 19
+## ⚖️ Legal & safety
 
-byte mosi = 23;  // GPIO
-
-byte ss = 5;        // GPIO 5
-
-int gdo0 = 2;     // GPIO 2
-
-int gdo2 = 4;     // GPIO 4
-
-----
-
-Example for XIAO ESP32 C3 - ATTENTION ! This board may require some shielding of cables connected to GDO0 pin when using some cheapest CC1101 boards (green D-SUN f.ex.)  to properly work with RXRAW/RECRAW commands. It catches noise like "FF" in RXRAW/RECRAW. 
-
-#define RECORDINGBUFFERSIZE 4096   // Buffer for recording the frames
-
-#define EPROMSIZE 512              // Size of EEPROM in your Arduino chip. For ESP32 it is Flash simulated 512 bytes only
-
-// defining PINs set for XIAO ESP32 C3
-
-byte sck = 8;   // GPIO 8 
-
-byte miso = 4;  // GPIO 4
-
-byte mosi = 10; // GPIO 10
-
-byte ss = 20;   // GPIO 20
-
-int gdo0 = 21;  // GPIO 21
-
-int gdo2 = 7;   // GPIO 7
-
-----
-
-Example for WEMOS D1 MINI module
-
-#define RECORDINGBUFFERSIZE 4096   // Buffer for recording the frames
-
-#define EPROMSIZE 4096              // Size of EEPROM in your Arduino chip. For  ESP8266 size is 4096
-
-// defining PINs set for ESP8266 - WEMOS D1 MINI module
-
-byte sck = 14;     // GPIO 14
-
-byte miso = 12;  // GPIO 12
-
-byte mosi = 13;  // GPIO 13
-
-byte ss = 15;      // GPIO 15
-
-int gdo0 = 5;     // GPIO 5
-
-int gdo2 = 4;     // GPIO 4
-
-----
-
-### Web UI (AP mode)
-
-Flash `cc1101-tool-esp8266` and the board also creates its own WiFi Access Point, SSID `cc1101` / password `cc1101`.
-
-Join that network from your phone or laptop and browse to `http://192.168.1.100` for a web control panel - radio config, action buttons, buffer view, and a raw command console. The serial CLI still works at the same time.
-
-Build note: `arduino-cli compile --profile d1mini cc1101-tool-esp8266` auto-installs the pinned core and SmartRC library via `sketch.yaml`, as an alternative to the Arduino IDE steps above.
-
-----
-
-Example for Arduino Nano board - ATTENTION ! I HAVE TESTED THIS BOARD AND IT REQUIRES TTL LOGIC COVERTER 5V<->3.3V TXS0108E ESPECIALLY FOR BOARD CC1101 : E07-M1101D, otherwise it does not work
-
-#define RECORDINGBUFFERSIZE 1024   // Buffer for recording the frames
-
-#define EPROMSIZE 1024             // Size of EEPROM in your Arduino chip. 
-
-// defining PINs for Arduino NANO
-
-byte sck = 16;  // D13 
-
-byte miso = 15;  // D12
-
-byte mosi = 14;  // D11
-
-byte ss = 13;  // D10
- 
-int gdo0 = 9;  // D6
-
-int gdo2 = 5;  // D2
-
-----
-
-Example for Raspberry Pi Pico / RP2040 board - ATTENTION ! I HAVE TESTED THIS BOARD AND IT USES 3.3V LOGIC 
-
-#define RECORDINGBUFFERSIZE 4096   // Buffer for recording the frames
-
-#define EPROMSIZE 512             // Size of EEPROM in your Arduino chip. 
-
-// defining PINs for Raspberry Pi Pico 
-
-// see pinout:  https://cdn-learn.adafruit.com/assets/assets/000/099/339/original/raspberry_pi_Pico-R3-Pinout-narrow.png
-
-byte sck = 2;  
-
-byte miso = 4;
-
-byte mosi = 3;
-
-byte ss = 5;
-
-int gdo0 = 7;
-
-int gdo2 = 6;
-
-
-
---------------------------------------------------------------------------------------
-First version of this project was presented in this video : https://youtu.be/iPVckkTjsd0
-Using Universal Radio Hacker and my CC1101-tool is presented in following video : https://youtu.be/mdkEK_wmWJA
---------------------------------------------------------------------------------------
-
-
-Change log :
-
-08.06.2023 : optimized CLI 
-- removed unnecessary parameters for commands RX, TX, JAM. 
-- changed command JAMM to JAM.  
-- optimized output of RX command - now will print directly hex values with no description when sniffer enabled.  
-- corrected reaction for CR/LF when using with "Serial Terminal" application on USB OTG port on Android phones
-- Added CHAT mode, if you have couple of these devices you may use it as and IRC like communicator on selected band/modulation/frequency/channel...
-
-
-09.06.2023 : added RAW mode as in Flipper Zero 
-- rxraw "interval microseconds", 
-- recraw "interval usec", 
-- playraw "interval usec", 
-- showraw - for record & replay attacking. 
-- buffer of 1536 bytes is used to store recording (in ATMEGA32U4, 1024 for Atmega Mega/Uno/Nano, 4096 or more for ESP32 boards). 
-- after playing with RAW mode please  always enter "init" command to restart CC1101 chip. Don't worry about Low Memory warning during Arduino compilation it will work JUST FINE.. Enjoy :-)    
-
-
-
-10.06.2023 : 
-- added Arduino Mega/Nano/Uno version which requires TTL logic converter for 3.3V - TXS0108E. 
-- added ESP32 version. 
-- changed RECRAW <sampling interval> command to start recording RAW signal once something appears over the radio. 
-- added command ADDRAW to enable manual composition of the signal in the buffer (by copying hex number chunks from Universal Radio Hacker tool for example). 
-- added option SCAN <start freq> <end freq> to find a peak frequency for recording/jamming..
-
-17.06.2023 : 
-- added SAVE function to store recorded frames buffer into non-volatile EEPROM memory of the Arduino chip 
-- added LOAD function to restore recorded frames from non-volatile memory and put them into recording buffer for replaying.
-- added SHOWBIT command to display RAW data from the buffer as stream of bits.
-- corrected ESP32 version which has problem with changing (char *) type to (byte *) due to different C++ compiler for ESP32 boards
-
-18.06.2023 : 
-- updated bit storage order in PLAYRAW, RXRAW, RECRAW commands to match the type used in Universal Radio Hacker tool : https://github.com/jopohl/urh
-
-30.06.2023
-- added debug message during CC1101 startup
-- corrected EEPROM usage for ESP32 chip based Arduino - ESP32 has 512 bytes, ESP8266 has 4096 bytes
-- added ESP32-WROOM version ( I have tested it succesfully with my own board )
-- added ESP8266 - WEMOS D1 Mini version
-
-08.07.2023
-- corrected ESP8266 version, WDT watchdog restarts MOSTLY solved (this single core chip is heavy loaded with internal WiFI procedures and TCP IP stack). Code was successfuly tested on WEMOS D1 MINI clone and D-SUN CC1101 board. The advantage of using WEMOS D1 MINI  biggest size of FLASH simulated EEPROM for RF sequences storage.  ESP32 chips are dual core and my code runs better. 
-
-13.07.2023
-- changed default data rate for Packet Mode from 1.2Kbaud to 9.6Kbaud which removes problems with Watchdog Restart on ESP8266 board and improves stability
-
-27.07.2023:
-- rp2040 board added
-
-18.08.2023:
-- added command BRUTE <microseconds> <number of bits> for brute force attack on some DIP switches based garage gates. Sometimes the code hangs after executing full brute force cycle. Trying to find the root cause... Another bad news is that I have reached full FLASH capacity of ATMEGA32U4 so no more extensions are possible to the code for this chip. 
-
-02.09.2023
-- WIFI client mode for ESP8266 board added - there is a separate source code version wifi in the name. Before uploading the code you need to assign an IP address to the module , put correct default gateway as well as configure SSID of your WIFI router and the WIFI password in the code like below (defaults are for Android tethering access point). Wifi client mode can be used to extend widely the range between CC1101 device and you PC/smartphone which is used to control this board.  Beetween them you have external Access Point that will be "man in the middle" to extend the WIFI range...
-- The ESP8266 board connects to your WIFI router/access point (you need 2nd mobile phone which will serve as an accesspoint for your own phone and ESP8266 board) and you do a TELNET to its IP address 192.168.43.100 from the other smartphone :
-  
-    IPAddress ip(192, 168, 43, 100);           // Local Static IP address
-
-    IPAddress gateway(192, 168, 43, 1);        // Gateway IP address
-
-    IPAddress subnet(255, 255, 255, 0);       // Subnet Mask
-
-    const char ssid[] = "AndroidAP";          // Change to your Router SSID
-
-    const char password[] = "password";      // Change to your Router Password
-  
-Example scenario for WIFI / telnet connection when ESP8266 is WIFI client :
-   ESP8266 + CC1101 WIFI client at 192.168.43.100   <->   Smartphone #1 wifi tethering / wifi access point at 192.168.43.1    <->  Smartphone #2 WIFI client / Connectbot - telnet to 192.168.43.100.  
-   ATTENTION ! When using WIFI versions I recommend to set ESP8266 CPU speed to 160 MHz : in arduino IDE - go to Tools, in dropdown list select "CPU Frequency 160MHz" instead of "CPU Frequency 80MHz". 
-
-   
-
-08.09.2023
-- WIFI Access Point mode to ESP8266 board added - there is a separate source code version with wifi-ap in the name. Before uploading the code you can change an IP address to the module and  SSID for your ESP8266 board. Default is SSID "cc1101" and IP address for telnet "192.168.1.100". This is the simplest scenario, use Connectbot and Telnet protocol to connect to CC1101 board over TCP port 23. ATTENTION ! When using WIFI versions I recommend to set ESP8266 CPU speed to 160 MHz : in arduino IDE - go to Tools, in dropdown list select "CPU Frequency 160MHz" instead of "CPU Frequency 80MHz". 
-
-
-22.11.2023
-Corrected bug in showbit() function, all the thanks go to  jps1x2.
-
-
-08.02.2024
-Corrected bug in scan() function (not accepting MHz fractions in frequency range), all the thanks go to chris4soft 
-
-
-31.07.2026 : Major refresh of the WEMOS D1 Mini (ESP8266) firmware
-- Made the sketch compile again on current toolchains (Arduino ESP8266 core 3.x / arduino-cli 1.x). The old CRLF line endings and a few non-ASCII characters were breaking the Arduino auto-prototype generator; the source is now plain ASCII/LF with explicit function prototypes.
-- Fixed memory-safety bugs: out-of-bounds writes in the hex conversion and in the REC buffer flush, chat/brute buffer overflows, an uninitialized SCAN comparison, and LOAD not rebuilding the frame count (so SHOW/PLAY work after LOAD again). Cleaned up and de-duplicated the command handling. The same build + out-of-bounds fixes were applied to every other board variant in `original_files/`.
-- Added a reproducible build profile: `arduino-cli compile --profile d1mini cc1101-tool-esp8266` (the `sketch.yaml` pins the ESP8266 core and auto-installs the SmartRC library) - an alternative to the Arduino IDE.
-- NEW - WiFi Access Point + web control panel. The board hosts its own AP (SSID `cc1101` / password `cc1101`) and serves a browser UI at http://192.168.1.100 with radio config, action buttons, a buffer viewer and a raw command console - all reusing the existing CLI. The USB serial console keeps working at the same time.
-- Made the long-running commands non-blocking so the web UI stays responsive: SCAN, RXRAW (sniffer) and BRUTE run as background modes (on serial they now return to the prompt immediately and keep running until you press any key or `x`). RECRAW and PLAYRAW became non-blocking background modes too - RECRAW no longer hangs forever waiting for a signal, and the web server stays responsive.
-- Fixed the long-standing "BRUTE sometimes hangs after the full cycle" bug: the RAW TX modes were leaving GDO0 driven as an OUTPUT against the CC1101 in packet mode (pin contention -> watchdog reset). GDO0 is now released back to INPUT on raw-mode exit, so single-cycle brute is reliable.
-
-
-  
-Known Bugs : sometimes RX command does not work correctly after many big frames have been received (in packet mode, not in async mode). This may be due to some memory leak in SmartRC library. Still checking what is the reason. Keep attention to putting an argument <microseconds> to rxraw, playraw command - otherwise ESP8266 are restarting themselves when wifi in use (stack overflow). On the ESP8266 WiFi/AP build, BRUTE with many bits (roughly 5+ / more than 16 codes) can still trigger a watchdog reset while the AP is running - a single-core WiFi vs. bit-bang timing limitation; small bit-counts are reliable.
-    
-    
+This is a **security-research and education** tool. RF jamming and transmitting on unauthorized frequencies is illegal in many jurisdictions — only transmit on bands, power levels, and devices you are authorized to use. See [BEGINNER.md](BEGINNER.md) for a fuller intro and safety notes.
