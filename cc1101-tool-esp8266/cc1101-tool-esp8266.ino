@@ -66,14 +66,22 @@ int bigrecordingbufferpos = 0;
 int framesinbigrecordingbuffer = 0; 
 
 // CLI activity: exactly one mode active at a time.
-enum Mode { MODE_IDLE, MODE_RX, MODE_JAM, MODE_REC, MODE_CHAT, MODE_SCAN, MODE_SNIFF, MODE_BRUTE };
+enum Mode { MODE_IDLE, MODE_RX, MODE_JAM, MODE_REC, MODE_CHAT, MODE_SCAN, MODE_SNIFF, MODE_BRUTE, MODE_RECRAW, MODE_PLAYRAW };
 Mode activeMode = MODE_IDLE;
 
 // scan mode state (serviced one frequency step per loop pass)
 float scanFrom = 0, scanTo = 0, scanCursor = 0;
 float scanBestFreq = 0;  int scanBestRssi = -100;  long scanCompare = 0;
 
-int sniffInterval = 0;   // microseconds per sample while MODE_SNIFF is active
+// sniffer state - captured in small chunks per loop pass so the web stays responsive
+#define SNIFF_CHUNK 128          // bytes captured per loop pass (divides RECORDINGBUFFERSIZE)
+int sniffInterval = 0;           // microseconds per sample while MODE_SNIFF is active
+int sniffCursor = 0;             // write position in the recording buffer
+
+// RAW record/replay state (non-blocking background modes)
+int recrawInterval = 0;          // microseconds per sample while MODE_RECRAW captures
+bool recrawWaiting = false;      // true while armed and waiting for the RF line to go high
+int playrawInterval = 0;         // microseconds per sample while MODE_PLAYRAW replays
 
 // brute mode state (a batch of codes serviced per loop pass)
 int bruteInterval = 0, bruteBits = 0;
@@ -82,10 +90,11 @@ uint32_t bruteCode = 0, bruteMax = 0;
 // human-readable name for /status
 static const char* modeName(void) {
     switch (activeMode) {
-        case MODE_RX: return "rx";        case MODE_JAM: return "jam";
-        case MODE_REC: return "rec";      case MODE_CHAT: return "chat";
-        case MODE_SCAN: return "scan";    case MODE_SNIFF: return "sniff";
-        case MODE_BRUTE: return "brute";  default: return "idle";
+        case MODE_RX: return "rx";          case MODE_JAM: return "jam";
+        case MODE_REC: return "rec";        case MODE_CHAT: return "chat";
+        case MODE_SCAN: return "scan";      case MODE_SNIFF: return "sniff";
+        case MODE_BRUTE: return "brute";    case MODE_RECRAW: return "recraw";
+        case MODE_PLAYRAW: return "playraw"; default: return "idle";
     }
 }
 
@@ -235,6 +244,10 @@ static void enterRawMode(bool tx)
 // restore CC1101 to normal packet mode after RAW record/replay
 static void exitRawMode(bool tx)
 {
+    // release GDO0: the TX raw modes (playraw/brute) drove it as an OUTPUT, but in
+    // packet mode the CC1101 owns that line. Leaving it forced (brute ends it HIGH)
+    // causes pin contention that hangs the next library call -> watchdog reset.
+    pinMode(gdo0, INPUT);
     ELECHOUSE_cc1101.setCCMode(1);
     ELECHOUSE_cc1101.setPktFormat(0);
     if (tx) ELECHOUSE_cc1101.SetTx(); else ELECHOUSE_cc1101.SetRx();
@@ -277,7 +290,8 @@ static void exec(char *cmdline)
     // A bit-bang RAW mode (sniff/brute) leaves the radio in async mode. Any new
     // command means the user wants something else, so cleanly stop that mode first
     // (restoring packet mode) - otherwise packet RX/TX would be silently broken.
-    if (activeMode == MODE_SNIFF || activeMode == MODE_BRUTE) stopActiveMode();
+    if (activeMode == MODE_SNIFF || activeMode == MODE_BRUTE ||
+        activeMode == MODE_RECRAW || activeMode == MODE_PLAYRAW) stopActiveMode();
 
   // identification of the command & actions
       
@@ -726,56 +740,18 @@ static void exec(char *cmdline)
 
     // handling RECRAW command
     } else if (strcmp_P(command, PSTR("recraw")) == 0) {
-        // take interval period for samplink
-        setting = atoi(cmdline);
-        if (setting>0)
-        {
-        // setup async mode on CC1101 with GDO0 pin processing
-        enterRawMode(false);
-
-        //start recording to the buffer with bitbanging of GDO0 pin state
-        out->print(F("\r\nWaiting for radio signal to start RAW recording...\r\n"));
-        pinMode(gdo0, INPUT);
-
-        // prime the GDO0 read (some boards emit noise at the start)
-        setting2 = digitalRead(gdo0);
-        delayMicroseconds(1000);
-
-        // wait (feeding the watchdog) until the RF line goes high
-        while ( digitalRead(gdo0) == LOW )
-                {  yield();
-                   // feed the watchdog in ESP8266
-                   ESP.wdtFeed();
-                };
-
-        //start recording to the buffer with bitbanging of GDO0 pin state
-        out->print(F("\r\nStarting RAW recording to the buffer...\r\n"));
-        pinMode(gdo0, INPUT);
-
-        // start recording RF signal
-        for (int i=0; i<RECORDINGBUFFERSIZE ; i++)
-           { 
-             byte receivedbyte = 0;
-             for(int j=7; j > -1; j--)  // 8 bits in a byte
-               {
-                 bitWrite(receivedbyte, j, digitalRead(gdo0)); // Capture GDO0 state into the byte
-                 delayMicroseconds(setting);                   // delay for selected sampling interval
-               }; 
-                 // store the output into recording buffer
-             bigrecordingbuffer[i] = receivedbyte;
-             // feed the watchdog in ESP8266
-             ESP.wdtFeed();
-           }
-
-        out->print(F("\r\nRecording RAW data complete.\r\n\r\n"));
-        // setting normal pkt format again
-        exitRawMode(false);
-        // feed the watchdog
-        ESP.wdtFeed();
-        // needed for ESP8266
-        yield();
+        // Non-blocking RAW capture: arm and return immediately. serviceActiveMode()
+        // waits for the signal (one poll per loop pass) and then does the single
+        // timing-coherent capture - off the /cmd path, so the web never hangs.
+        recrawInterval = atoi(cmdline);
+        if (recrawInterval > 0) {
+            enterRawMode(false);
+            pinMode(gdo0, INPUT);
+            out->print(F("\r\nWaiting for radio signal to start RAW recording...\r\n"));
+            recrawWaiting = true;
+            activeMode = MODE_RECRAW;
         }
-        else { out->print(F("Wrong parameters.\r\n")); };
+        else { out->print(F("Wrong parameters.\r\n")); }
 
    // handling RXRAW command - sniffer
     } else if (strcmp_P(command, PSTR("rxraw")) == 0) {
@@ -784,6 +760,7 @@ static void exec(char *cmdline)
             enterRawMode(false);
             out->print(F("\r\nSniffer enabled...\r\n"));
             pinMode(gdo0, INPUT);
+            sniffCursor = 0;
             activeMode = MODE_SNIFF;
         }
         else { out->print(F("Wrong parameters.\r\n")); }
@@ -791,38 +768,16 @@ static void exec(char *cmdline)
 
     // handling PLAYRAW command
     } else if (strcmp_P(command, PSTR("playraw")) == 0) {
-        // take interval period for sampling
-        setting = atoi(cmdline);
-        if (setting>0)
-        {
-        // setup async mode on CC1101 and go into TX mode with GDO0 processing
-        enterRawMode(true);
-        //start replaying GDO0 bit state from data in the buffer with bitbanging
-        out->print(F("\r\nReplaying RAW data from the buffer...\r\n"));
-        pinMode(gdo0, OUTPUT);
-
-        // start RF replay
-        for (int i=1; i<RECORDINGBUFFERSIZE ; i++)
-           { 
-             byte receivedbyte = bigrecordingbuffer[i];
-             for(int j=7; j > -1; j--)  // 8 bits in a byte
-               {
-                 digitalWrite(gdo0, bitRead(receivedbyte, j)); // Set GDO0 according to recorded byte
-                 delayMicroseconds(setting);                      // delay for selected sampling interval
-               }; 
-              // feed the watchdog
-              ESP.wdtFeed();
-           };
-
-        out->print(F("\r\nReplaying RAW data complete.\r\n\r\n"));
-        // setting normal pkt format again
-        exitRawMode(true);
-        // feed the watchdog
-        ESP.wdtFeed();
-        // needed for ESP8266
-        yield();
+        // Non-blocking RAW replay: arm and return immediately. serviceActiveMode()
+        // does the single timing-coherent replay off the /cmd path.
+        playrawInterval = atoi(cmdline);
+        if (playrawInterval > 0) {
+            enterRawMode(true);
+            pinMode(gdo0, OUTPUT);
+            out->print(F("\r\nReplaying RAW data from the buffer...\r\n"));
+            activeMode = MODE_PLAYRAW;
         }
-        else { out->print(F("Wrong parameters.\r\n")); };
+        else { out->print(F("Wrong parameters.\r\n")); }
 
     // handling SHOWRAW command
     } else if (strcmp_P(command, PSTR("showraw")) == 0) {
@@ -1119,8 +1074,8 @@ static void exec(char *cmdline)
 
 // stop the active mode and restore normal packet mode if it was a raw mode
 static void stopActiveMode(void) {
-    if (activeMode == MODE_SNIFF) exitRawMode(false);
-    if (activeMode == MODE_BRUTE) exitRawMode(true);
+    if (activeMode == MODE_SNIFF || activeMode == MODE_RECRAW) exitRawMode(false);
+    if (activeMode == MODE_BRUTE || activeMode == MODE_PLAYRAW) exitRawMode(true);
     activeMode = MODE_IDLE;
 }
 
@@ -1154,21 +1109,63 @@ static void serviceActiveMode(void)
         }
     }
     else if (activeMode == MODE_SNIFF) {
-        // capture one bufferful of GDO0 samples, then dump it (timing-coherent per byte)
-        for (int i = 0; i < RECORDINGBUFFERSIZE; i++) {
+        // Capture one small chunk (timing-coherent within the chunk), dump it, advance.
+        // Small chunks let loop() return to handleClient() ~10x/s so the web stays live.
+        for (int n = 0; n < SNIFF_CHUNK; n++) {
             byte receivedbyte = 0;
             for (int j = 7; j > -1; j--) {
                 bitWrite(receivedbyte, j, digitalRead(gdo0));
                 delayMicroseconds(sniffInterval);
             }
-            bigrecordingbuffer[i] = receivedbyte;
+            bigrecordingbuffer[sniffCursor + n] = receivedbyte;
             ESP.wdtFeed();
         }
-        dumpBufferHex(0, RECORDINGBUFFERSIZE);
+        dumpBufferHex(sniffCursor, SNIFF_CHUNK);
+        sniffCursor += SNIFF_CHUNK;
+        if (sniffCursor >= RECORDINGBUFFERSIZE) sniffCursor = 0;
+    }
+    else if (activeMode == MODE_RECRAW) {
+        if (recrawWaiting) {
+            // non-blocking arm: sample the line once per pass; start on first HIGH
+            if (digitalRead(gdo0) == HIGH) {
+                recrawWaiting = false;
+                out->print(F("\r\nStarting RAW recording to the buffer...\r\n"));
+            }
+            // else: stay armed, return so the web keeps polling
+        } else {
+            // one timing-coherent capture (the unavoidable, bounded block)
+            for (int i = 0; i < RECORDINGBUFFERSIZE; i++) {
+                byte receivedbyte = 0;
+                for (int j = 7; j > -1; j--) {
+                    bitWrite(receivedbyte, j, digitalRead(gdo0));
+                    delayMicroseconds(recrawInterval);
+                }
+                bigrecordingbuffer[i] = receivedbyte;
+                ESP.wdtFeed();
+            }
+            out->print(F("\r\nRecording RAW data complete.\r\n\r\n"));
+            exitRawMode(false);
+            activeMode = MODE_IDLE;
+        }
+    }
+    else if (activeMode == MODE_PLAYRAW) {
+        // one timing-coherent replay (the unavoidable, bounded block)
+        for (int i = 1; i < RECORDINGBUFFERSIZE; i++) {
+            byte receivedbyte = bigrecordingbuffer[i];
+            for (int j = 7; j > -1; j--) {
+                digitalWrite(gdo0, bitRead(receivedbyte, j));
+                delayMicroseconds(playrawInterval);
+            }
+            ESP.wdtFeed();
+        }
+        out->print(F("\r\nReplaying RAW data complete.\r\n\r\n"));
+        exitRawMode(true);
+        activeMode = MODE_IDLE;
     }
     else if (activeMode == MODE_BRUTE) {
-        // send a batch of codes this pass (each code 5x), keep timing tight
-        const uint32_t BATCH = 64;
+        // send a batch of codes this pass (each code 5x), keep timing tight.
+        // small batch keeps loop() returning so the web stays responsive.
+        const uint32_t BATCH = 16;
         for (uint32_t n = 0; n < BATCH && bruteCode < bruteMax; n++, bruteCode++) {
             for (int k = 0; k < 5; k++) {
                 for (int j = bruteBits - 1; j > -1; j--) {
@@ -1236,7 +1233,8 @@ void loop() {
    server.handleClient();
 
    // any serial input stops a running background mode (preserves old UX)
-   if (activeMode == MODE_SCAN || activeMode == MODE_SNIFF || activeMode == MODE_BRUTE) {
+   if (activeMode == MODE_SCAN || activeMode == MODE_SNIFF || activeMode == MODE_BRUTE ||
+       activeMode == MODE_RECRAW || activeMode == MODE_PLAYRAW) {
        if (Serial.available()) { stopActiveMode(); }
    }
 

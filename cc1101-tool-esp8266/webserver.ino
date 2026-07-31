@@ -6,6 +6,7 @@
 class StringPrint : public Print {
   public:
     String buf;
+    StringPrint() { buf.reserve(256); }   // avoid early reallocs on large command output
     size_t write(uint8_t c) override { buf += (char)c; return 1; }
     size_t write(const uint8_t *b, size_t n) override {
         for (size_t i = 0; i < n; i++) buf += (char)b[i];
@@ -109,6 +110,7 @@ setInterval(poll,1500);poll();
 static void startAP(void)
 {
     WiFi.mode(WIFI_AP);
+    WiFi.setSleepMode(WIFI_NONE_SLEEP);   // no modem sleep -> lower AP request latency
     WiFi.softAPConfig(apIP, apGateway, apSubnet);
     if (strlen(AP_PASSWORD) >= 8) WiFi.softAP(AP_SSID, AP_PASSWORD);
     else                          WiFi.softAP(AP_SSID);
