@@ -89,6 +89,7 @@ Once flashed, connect over [USB serial](#-usb-serial-mode) or the [Web UI](#-web
 | `setrxbw <kHz>` | Receive bandwidth, 58.03–812.50 kHz (default 812.50) |
 | `setdrate <kBaud>` | Data rate, 0.02–1621.83 kBaud |
 | `setpa <dBm>` | TX power: -30 -20 -15 -10 -6 0 5 7 10 11 12 (default max) |
+| `applyradio <MHz> <mod> <rate> <dev> <bw> <dBm>` | Atomically validate, apply, calibrate, read back, and report a complete radio profile |
 | `setsyncmode <0-7>` | Sync-word qualifier mode (0 = none … 7 = 30/32 + carrier-sense) |
 | `setsyncword <LOW HIGH>` | Sync word (must match transmitter & receiver) |
 | `setadrchk <0-3>` | Address-check config for received packets |
@@ -106,6 +107,8 @@ Once flashed, connect over [USB serial](#-usb-serial-mode) or the [Web UI](#-web
 | `setpqt <mode>` | Preamble quality estimator threshold |
 | `setappendstatus <0/1>` | Append RSSI/LQI/CRC status bytes to payload |
 | `getrssi` | Show radio quality info for the last received frame |
+
+The web Apply button uses `applyradio`, so all profile registers are written only after the CC1101 reaches IDLE. RX bandwidth is snapped to the nearest legal CC1101 value, frequency changes receive an explicit synthesizer calibration, and the status panel displays register-derived frequency and bandwidth rather than the submitted form text.
 
 </details>
 
