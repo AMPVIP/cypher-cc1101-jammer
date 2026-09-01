@@ -61,16 +61,7 @@ Join that network from your phone or laptop and open the URL for a control panel
 
 ## ⚡ Build & flash
 
-**With `arduino-cli` (reproducible, recommended):** the pinned [`sketch.yaml`](cc1101-tool-esp8266/sketch.yaml) profile installs the ESP8266 core and the SmartRC library automatically.
-
-```bash
-arduino-cli compile --profile d1mini cc1101-tool-esp8266
-arduino-cli upload -p <PORT> --profile d1mini cc1101-tool-esp8266
-```
-
-**With the Arduino IDE:** install the **SmartRC-CC1101-Driver-Lib** (ELECHOUSE fork by Little_S@tan — https://github.com/LSatan/SmartRC-CC1101-Driver-Lib), add ESP8266 board support, select the WEMOS D1 Mini, set CPU frequency to **160 MHz**, then compile & upload. A "Low Memory" warning is expected and harmless.
-
-Once flashed, connect over [USB serial](#-usb-serial-mode) or the [Web UI](#-web-ui-ap-mode) above.
+Just copy the files to yours PlatformIO project
 
 ---
 
