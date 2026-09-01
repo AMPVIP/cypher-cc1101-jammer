@@ -51,8 +51,8 @@ Flash the D1 Mini sketch and the board creates its own WiFi Access Point:
 
 | | |
 |---|---|
-| **SSID** | `cc1101` |
-| **Password** | `cc1101` |
+| **SSID** | `look in the main.cpp` |
+| **Password** | `look in the main.cpp` |
 | **URL** | http://192.168.1.100 |
 
 Join that network from your phone or laptop and open the URL for a control panel — radio config, action buttons, buffer view, and a raw command console (everything reuses the same CLI). The USB serial console works at the same time. Tip: run the ESP8266 at **160 MHz** for best WiFi stability.
