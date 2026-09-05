@@ -81,22 +81,22 @@ Just copy the files to yours PlatformIO project
 | `setdrate <kBaud>` | Data rate, 0.02–1621.83 kBaud |
 | `setpa <dBm>` | TX power: -30 -20 -15 -10 -6 0 5 7 10 11 12 (default max) |
 | `applyradio <MHz> <mod> <rate> <dev> <bw> <dBm>` | Atomically validate, apply, calibrate, read back, and report a complete radio profile |
-| `setsyncmode <0-7>` | Sync-word qualifier mode (0 = none … 7 = 30/32 + carrier-sense) |
+| `setsyncmode <0-7>` | Combined sync-word qualifier mode. 0 = No preamble/sync. 1 = 16 sync word bits detected. 2 = 16/16 sync word bits detected. 3 = 30/32 sync word bits detected. 4 = No preamble/sync, carrier-sense above threshold. 5 = 15/16 + carrier-sense above threshold. 6 = 16/16 + carrier-sense above threshold. 7 = 30/32 + carrier-sense above threshold|
 | `setsyncword <LOW HIGH>` | Sync word (must match transmitter & receiver) |
-| `setadrchk <0-3>` | Address-check config for received packets |
+| `setadrchk <0-3>` | Controls address check configuration of received packages. 0 = No address check. 1 = Address check, no broadcast. 2 = Address check and 0 (0x00) broadcast. 3 = Address check and 0 (0x00) and 255 (0xFF) broadcast |
 | `setaddr <address>` | Address used for packet filtration (broadcast: 0x00 / 0xFF) |
 | `setwhitedata <0/1>` | Data whitening off / on |
-| `setpktformat <0-3>` | 0 = FIFO, 1 = sync serial, 2 = random TX (PN9), 3 = async serial |
-| `setlengthconfig <0-3>` | 0 = fixed, 1 = variable, 2 = infinite length mode |
-| `setpacketlength <n>` | Packet length (fixed mode) / max length (variable mode) |
+| `setpktformat <0-3>` | Format of RX and TX data. 0 = Normal mode, use FIFOs for RX and TX. 1 = Synchronous serial mode, Data in on GDO0 and data out on either of the GDOx pins. 2 = Random TX mode; sends random data using PN9 generator. Used for test. Works as normal mode, setting 0 (00), in RX. 3 = Asynchronous serial mode, Data in on GDO0 and data out on either of the GDOx pins |
+| `setlengthconfig <0-3>` | 0 = fixed, 1 = variable, 2 = infinite length mode 3 = Reserved|
+| `setpacketlength <n>` | ndicates the packet length when fixed packet length mode is enabled. If variable packet length mode is used, this value indicates the maximum packet length allowed |
 | `setcrc <0/1>` | CRC calculation/check off / on |
-| `setcrcaf <0/1>` | Auto-flush RX FIFO on bad CRC |
+| `setcrcaf <0/1>` | Enable automatic flush of RX FIFO when CRC is not OK. This requires that only one packet is in the RXIFIFO and that packet length is limited to the RX FIFO size |
 | `setdcfilteroff <0/1>` | Digital DC blocking filter (only for data rates ≤ 250 kBaud) |
 | `setmanchester <0/1>` | Manchester encoding/decoding off / on |
 | `setfec <0/1>` | Forward Error Correction off / on (fixed length only) |
-| `setpre <0-7>` | Minimum preamble bytes (0:2 … 7:24) |
-| `setpqt <mode>` | Preamble quality estimator threshold |
-| `setappendstatus <0/1>` | Append RSSI/LQI/CRC status bytes to payload |
+| `setpre <0-7>` | Minimum preamble bytes (0 : 2, 1 : 3, 2 : 4, 3 : 6, 4 : 8, 5 : 12, 6 : 16, 7 : 24) |
+| `setpqt <mode>` | Preamble quality estimator threshold. The preamble quality estimator increases an internal counter by one each time a bit is received that is different from the previous bit, and decreases the counter by 8 each time a bit is received that is the same as the last bit. A threshold of 4∙PQT for this counter is used to gate sync word detection. When PQT=0 a sync word is always accepted |
+| `setappendstatus <0/1>` | When enabled, two status bytes will be appended to the payload of the packet. The status bytes contain RSSI and LQI values, as well as CRC OK |
 | `getrssi` | Show radio quality info for the last received frame |
 
 The web Apply button uses `applyradio`, so all profile registers are written only after the CC1101 reaches IDLE. RX bandwidth is snapped to the nearest legal CC1101 value, frequency changes receive an explicit synthesizer calibration, and the status panel displays register-derived frequency and bandwidth rather than the submitted form text.
@@ -111,8 +111,8 @@ The web Apply button uses `applyradio`, so all profile registers are written onl
 | `scan <start> <end>` | Scan a frequency range for the strongest signal (background mode) |
 | `rx` | Enable/disable printing of received RF packets |
 | `tx <hex-vals>` | Send a packet (max 60 bytes) of hex values over RF |
-| `jam` | Enable/disable continuous jamming on the selected band |
-| `brute <usec> <bits>` | Brute-force a DIP-switch gate: `<bits>` code, `<usec>` symbol length (background mode) |
+| `jam` | Enable or disable continous jamming on selected band with selected modulation etc... |
+| `brute <usec> <bits>` | Brute force garage gate with <number-of-bits> keyword where symbol length is <microseconds> |
 | `chat` | Switch the device into IRC-like chat mode (disconnect to quit) |
 | `x` | Stop jamming / receiving / recording / any background mode |
 | `init` | Restart the CC1101 with default parameters |
@@ -126,9 +126,9 @@ The web Apply button uses `applyradio`, so all profile registers are written onl
 |---------|-------------|
 | `rec` | Enable/disable recording received frames into the buffer |
 | `show` | Show the contents of the recording buffer |
-| `add <hex-vals>` | Manually add a single frame (max 60 hex values) to the buffer |
+| `add <hex-vals>` | Manually add single frame payload (max 60 hex values) to the buffer so it can be replayed |
 | `flush` | Clear the recording buffer |
-| `play <N>` | Replay frame N (or 0 for all recorded frames) |
+| `play <N>` | Replay 0 = all frames or N-th recorded frame |
 | `save` | Store the recording buffer in non-volatile memory |
 | `load` | Load the recording buffer back from non-volatile memory |
 
@@ -139,7 +139,8 @@ The web Apply button uses `applyradio`, so all profile registers are written onl
 
 | Command | Description |
 |---------|-------------|
-| `rxraw <usec>` | Sniff the radio at `<usec>` sampling interval and print hex (background mode) |
+| `rxraw <usec>` | Sniffs radio by sampling with <microsecond> interval and prints received bytes in hex |
+| `addraw <hex-vals>` | Manually add chunks (max 60 hex values) to the buffer so they can be further replayed |
 | `recraw <usec>` | Record RAW RF data at `<usec>` sampling interval (starts on signal) |
 | `playraw <usec>` | Replay recorded RAW RF data at `<usec>` sampling interval |
 | `addraw <hex-vals>` | Manually add RAW chunks (max 60 hex values) to the buffer |
