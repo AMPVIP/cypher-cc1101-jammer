@@ -3,8 +3,7 @@
 **Open-source sub-GHz RF pentesting device** built around a **WEMOS D1 Mini (ESP8266)** and a **CC1101** radio module. A YardStick-One-like serial CLI for scanning, transmitting, jamming, brute-forcing, and RAW record/replay of sub-GHz signals — plus a browser control panel. Works alongside a Flipper Zero.
 
 > 🛠️ Flash [`cc1101-tool-esp8266/cc1101-tool-esp8266.ino`](cc1101-tool-esp8266/cc1101-tool-esp8266.ino) if you're using the WEMOS D1 Mini.
->
-> 🔗 Order my PCB from PCBWay & get a $10 coupon ^_^ : https://pcbway.com/g/87Pi52
+> Or [`PlatformIO/src/main.cpp`](PlatformIO/src/main.cpp) if you don’t like to waite and use Platformio
 
 <table>
   <tr>
@@ -24,6 +23,7 @@
 ## 🆕 What's new (2026)
 
 A major refresh of the WEMOS D1 Mini firmware:
+- ** I added an Android program (just a webview) and the help. In the future, I will move the calculations to Android.
 
 - **🌐 WiFi Access Point + web control panel** — the board hosts its own AP and serves a browser UI with radio config, action buttons, a buffer viewer, and a raw command console. The USB serial CLI keeps working at the same time.
 - **⚡ Responsive, non-blocking modes** — `scan`, `sniff` (rxraw), `brute`, `recraw` and `playraw` now run as background modes, so the web UI no longer freezes and `recraw` no longer hangs waiting for a signal.
