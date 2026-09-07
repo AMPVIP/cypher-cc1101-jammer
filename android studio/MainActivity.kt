@@ -62,9 +62,18 @@ class MainActivity : AppCompatActivity() {
 
             if (Math.abs(diffX) > Math.abs(diffY)) {
                 if (Math.abs(diffX) > SWIPE_THRESHOLD && Math.abs(velocityX) > SWIPE_VELOCITY_THRESHOLD) {
-                    if (diffX < 0) {
-                        navigateToSecondActivity()
-                        return true
+                    when {
+                        diffX < 0 -> {
+                            // ✅ Свайп влево - SecondActivity (команды)
+                            navigateToSecondActivity()
+                            return true
+                        }
+
+                        diffX > 0 -> {
+                            // ✅ Свайп вправо - ThirdActivity (информация)
+                            navigateToThirdActivity()
+                            return true
+                        }
                     }
                 }
             }
@@ -75,6 +84,11 @@ class MainActivity : AppCompatActivity() {
             val intent = Intent(this@MainActivity, SecondActivity::class.java)
             startActivity(intent)
             overridePendingTransition(R.anim.slide_in_right, R.anim.slide_out_left)
+        }
+        private fun navigateToThirdActivity() {
+            val intent = Intent(this@MainActivity, ThirdActivity::class.java)
+            startActivity(intent)
+            overridePendingTransition(R.anim.slide_in_left, R.anim.slide_out_right)
         }
     }
 }
