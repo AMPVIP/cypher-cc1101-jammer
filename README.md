@@ -1,6 +1,6 @@
 # Cypher CC1101 Jammer — PCB & Firmware
 
-**Open-source sub-GHz RF pentesting device** built around a **WEMOS D1 Mini (ESP8266)** and a **CC1101** radio module. A YardStick-One-like serial CLI for scanning, transmitting, jamming, brute-forcing, and RAW record/replay of sub-GHz signals — plus a browser control panel. Works alongside a Flipper Zero.
+**Open-source sub-GHz RF pentesting device** built around a **WEMOS D1 Mini (ESP8266)** and a **CC1101** radio module. A YardStick-One-like serial CLI for scanning, transmitting, jamming, brute-forcing, and RAW record/replay of sub-GHz signals — plus a browser control panel. Works alongside a Android.
 
 > 🛠️ Flash [`cc1101-tool-esp8266/cc1101-tool-esp8266.ino`](cc1101-tool-esp8266/cc1101-tool-esp8266.ino) if you're using the WEMOS D1 Mini.
 > Or [`PlatformIO/src/main.cpp`](PlatformIO/src/main.cpp) if you don’t like to waite and use Platformio
