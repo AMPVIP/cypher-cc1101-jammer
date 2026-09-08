@@ -14,7 +14,7 @@
   <tr>
     <td><img src="device_img/cypher_c11014.JPG" alt="Cypher CC1101 device" width="260"></td>
     <td><img src="device_img/cypher_c11015.JPG" alt="Cypher CC1101 device" width="260"></td>
-    <td valign="middle"><img src="Esp8266_CC1101.png" alt="ESP8266 + CC1101 wiring" width="260"></td>
+    <td valign="middle"><img src="original_files/wemos-d1-mini-cc1101-E07-M1101D.png" alt="ESP8266 + CC1101 wiring" width="260"></td>
   </tr>
 </table>
 
