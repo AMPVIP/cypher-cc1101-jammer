@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Основные фоны -->
+    <color name="bg">#07100F</color>
+    <color name="panel">#0D1917</color>
+    <color name="panel2">#11211E</color>
+    <color name="line">#203C36</color>
+    <color name="console_bg">#030B09</color>
+    <color name="console_bar">#19332D</color>
+
+    <!-- Текст -->
+    <color name="ink">#E7FFF8</color>
+    <color name="muted">#7DA098</color>
+    <color name="console_ink">#BDEBDC</color>
+
+    <!-- Акценты -->
+    <color name="accent">#57EFBD</color>
+    <color name="accent2">#20B889</color>
+    <color name="warn">#FFBF69</color>
+    <color name="danger">#FF6B75</color>
+    <color name="dot_off">#FFBF69</color>
+</resources>
