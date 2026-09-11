@@ -21,6 +21,8 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 
+ADC_MODE(ADC_VCC); //A0 for measuring voltage
+
 #define CCBUFFERSIZE 64
 #define RECORDINGBUFFERSIZE 4096   // Buffer for recording the frames
 #define EPROMSIZE 4096              // Size of EEPROM in your Arduino chip. For  ESP8266 size is 4096
@@ -39,6 +41,9 @@
 IPAddress apIP(192, 168, 1, 100);
 IPAddress apGateway(192, 168, 1, 1);
 IPAddress apSubnet(255, 255, 255, 0);
+// wifi sta
+// const char* ssid = "TP-Link_1101";
+// const char* password = "22110011";
 
 ESP8266WebServer server(80);
 
@@ -49,6 +54,11 @@ Print* out = &Serial;
 // Live values decoded from the CC1101 configuration registers.
 float currentFreq = 433.92;
 float currentRxBw = 812.50;
+
+float getBatteryVoltage(void) {
+    uint16_t vcc = ESP.getVcc();  // в милливольтах
+    return vcc / 1000.0;          // в вольтах
+}
 
 // defining PINs set for ESP8266 - WEMOS D1 MINI module
 byte sck = 14;     // GPIO 14
@@ -87,7 +97,12 @@ int sniffCursor = 0;             // write position in the recording buffer
 int recrawInterval = 0;          // microseconds per sample while MODE_RECRAW captures
 bool recrawWaiting = false;      // true while armed and waiting for the RF line to go high
 int playrawInterval = 0;         // microseconds per sample while MODE_PLAYRAW replays
-
+// Watchdog-safe caps for RAW per-sample intervals. Every RAW path clamps to one of these so a
+// single delayMicroseconds() can never overrun the ESP8266 watchdog. RECRAW/PLAYRAW run as one
+// continuous block, so their cap keeps 4096 B x 8 bits under the hardware WDT (150 us ~= 4.9 s).
+// RXRAW/BRUTE return to loop() between chunks, so they tolerate a looser cap. Tuned on-device.
+#define RAW_MAX_INTERVAL        150
+#define RAW_CHUNK_MAX_INTERVAL  1000
 // brute mode state (a batch of codes serviced per loop pass)
 int bruteInterval = 0, bruteBits = 0;
 uint32_t bruteCode = 0, bruteMax = 0;
@@ -95,11 +110,16 @@ uint32_t bruteCode = 0, bruteMax = 0;
 // human-readable name for /status
 static const char* modeName(void) {
     switch (activeMode) {
-        case MODE_RX: return "rx";          case MODE_JAM: return "jam";
-        case MODE_REC: return "rec";        case MODE_CHAT: return "chat";
-        case MODE_SCAN: return "scan";      case MODE_SNIFF: return "sniff";
-        case MODE_BRUTE: return "brute";    case MODE_RECRAW: return "recraw";
-        case MODE_PLAYRAW: return "playraw"; default: return "idle";
+        case MODE_RX: return "rx";          
+        case MODE_JAM: return "jam";
+        case MODE_REC: return "rec";        
+        case MODE_CHAT: return "chat";
+        case MODE_SCAN: return "scan";      
+        case MODE_SNIFF: return "sniff";
+        case MODE_BRUTE: return "brute";    
+        case MODE_RECRAW: return "recraw";
+        case MODE_PLAYRAW: return "playraw"; 
+        default: return "idle";
     }
 }
 
@@ -267,6 +287,20 @@ static void startActiveMode(Mode mode)
     modeStartedAt = millis();
     lastModeFeedbackAt = modeStartedAt;
     modeActivityCount = 0;
+}
+// Clamp a RAW per-sample interval to a watchdog-safe maximum, announcing when it clamps.
+// Guarantees no RAW path ever hands delayMicroseconds() an unbounded value.
+static int clampRawInterval(int usec, int maxUsec, const char *tag)
+{
+    if (usec > maxUsec) {
+        out->print(F("\r\n["));
+        out->print(tag);
+        out->print(F("] interval clamped to "));
+        out->print(maxUsec);
+        out->print(F(" us (max)\r\n"));
+        usec = maxUsec;
+    }
+    return usec;
 }
 
 static bool modeFeedbackDue(unsigned long intervalMs)
@@ -535,7 +569,7 @@ static void exec(char *cmdline)
 
   // identification of the command & actions
       
-    if (strcmp_P(command, PSTR("help")) == 0) {
+    if (strcasecmp_P(command, PSTR("help")) == 0) {
         out->println(F(
           "\r\n+------------------------------------------------------+\r\n"
           "| CYPHER CC1101 FIELD CONSOLE - COMMAND MAP           |\r\n"
@@ -544,10 +578,10 @@ static void exec(char *cmdline)
           "  rx                         packet monitor on/off\r\n"
           "  rec                        record packets on/off\r\n"
           "  scan <from> <to>           sweep a MHz range\r\n"
-          "  rxraw <usec>               stream raw sampled blocks\r\n"
-          "  recraw <usec>              arm one 4096-byte capture\r\n"
-          "  playraw <usec>             replay raw buffer\r\n"
-          "  brute <usec> <bits>        test raw bit codes\r\n"
+          "  rxraw <usec>               stream raw blocks (usec/sample, max 1000)\r\n"
+          "  recraw <usec>              arm 4096-byte capture (usec/sample, max 150)\r\n"
+          "  playraw <usec>             replay raw buffer (usec/sample, max 150)\r\n"
+          "  brute <usec> <bits>        test raw bit codes (usec/symbol, max 1000)\r\n"
           "  jam                        random TX mode on/off\r\n"
           "  chat                       serial-over-RF chat mode\r\n"
           "  x                          stop active mode\r\n"
@@ -599,7 +633,7 @@ static void exec(char *cmdline)
           yield();
 
     // Handling STATUS command - compact terminal dashboard
-    } else if (strcmp_P(command, PSTR("status")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("status")) == 0) {
         out->print(F("\r\n+---------------- CC1101 STATUS ----------------+\r\n"));
         out->print(F("  mode       ")); out->println(modeName());
         currentFreq = readRadioFrequencyMHz();
@@ -623,7 +657,7 @@ static void exec(char *cmdline)
         out->print(F("+------------------------------------------------+\r\n"));
 
     // Apply a complete validated profile while the synthesizer is safely idle.
-    } else if (strcmp_P(command, PSTR("applyradio")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("applyradio")) == 0) {
         char *args[6];
         bool complete = true;
         for (byte i = 0; i < 6; i++) {
@@ -651,7 +685,7 @@ static void exec(char *cmdline)
         }
 
     // Handling SETMODULATION command 
-    } else if (strcmp_P(command, PSTR("setmodulation")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("setmodulation")) == 0) {
         setting = atoi(cmdline);
         if (setting >= 0 && setting <= 4) {
             ELECHOUSE_cc1101.setModulation(setting);
@@ -668,7 +702,7 @@ static void exec(char *cmdline)
         yield();
 
     // Handling SETMHZ command 
-    } else if (strcmp_P(command, PSTR("setmhz")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("setmhz")) == 0) {
         settingf1 = atof(cmdline);
         if (supportedFrequency(settingf1)) ELECHOUSE_cc1101.setMHZ(settingf1);
         else out->print(F("[ERROR] MHz must be in 300-348, 387-464, or 779-928\r\n"));
@@ -678,7 +712,7 @@ static void exec(char *cmdline)
         yield();
         
     // Handling SETDEVIATION command 
-    } else if (strcmp_P(command, PSTR("setdeviation")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("setdeviation")) == 0) {
         settingf1 = atof(cmdline);
         if (settingf1 >= 1.586914f && settingf1 <= 380.859375f)
             ELECHOUSE_cc1101.setDeviation(settingf1);
@@ -689,7 +723,7 @@ static void exec(char *cmdline)
         yield();
 
     // Handling SETCHANNEL command       
-    } else if (strcmp_P(command, PSTR("setchannel")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("setchannel")) == 0) {
         setting = atoi(cmdline);
         ELECHOUSE_cc1101.setChannel(setting);
         out->print(F("\r\nChannel:"));
@@ -698,7 +732,7 @@ static void exec(char *cmdline)
         yield();
 
     // Handling SETCHSP command 
-    } else if (strcmp_P(command, PSTR("setchsp")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("setchsp")) == 0) {
         settingf1 = atof(cmdline);
         ELECHOUSE_cc1101.setChsp(settingf1);
         out->print(F("\r\nChann spacing: "));
@@ -707,7 +741,7 @@ static void exec(char *cmdline)
         yield();
 
     // Handling SETRXBW command         
-    } else if (strcmp_P(command, PSTR("setrxbw")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("setrxbw")) == 0) {
         settingf1 = atof(cmdline);
         if (settingf1 >= 58.0357f && settingf1 <= 812.5f) {
             settingf1 = nearestRxBwKHz(settingf1);
@@ -719,7 +753,7 @@ static void exec(char *cmdline)
         yield();
 
     // Handling SETDRATE command         
-    } else if (strcmp_P(command, PSTR("setdrate")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("setdrate")) == 0) {
         settingf1 = atof(cmdline);
         if (settingf1 >= 0.0247955f && settingf1 <= 1621.83f)
             ELECHOUSE_cc1101.setDRate(settingf1);
@@ -730,7 +764,7 @@ static void exec(char *cmdline)
         yield();
 
     // Handling SETPA command         
-    } else if (strcmp_P(command, PSTR("setpa")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("setpa")) == 0) {
         setting = atoi(cmdline);
         if (supportedPa(setting)) ELECHOUSE_cc1101.setPA(setting);
         else out->print(F("[ERROR] unsupported dBm value\r\n"));
@@ -740,7 +774,7 @@ static void exec(char *cmdline)
         yield();
         
     // Handling SETSYNCMODE command         
-    } else if (strcmp_P(command, PSTR("setsyncmode")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("setsyncmode")) == 0) {
         int setting = atoi(cmdline);
         ELECHOUSE_cc1101.setSyncMode(setting);
         out->print(F("\r\nSynchronization: "));
@@ -756,7 +790,7 @@ static void exec(char *cmdline)
         yield();
         
     // Handling SETSYNCWORD command         
-    } else if (strcmp_P(command, PSTR("setsyncword")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("setsyncword")) == 0) {
         setting = atoi(strsep(&cmdline, " "));
         setting2 = atoi(cmdline);
         // args are entered LOW then HIGH; setSyncWord takes (high, low)
@@ -770,7 +804,7 @@ static void exec(char *cmdline)
         yield();
     
     // Handling SETADRCHK command         
-    } else if (strcmp_P(command, PSTR("setadrchk")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("setadrchk")) == 0) {
         setting = atoi(cmdline);
         ELECHOUSE_cc1101.setAdrChk(setting);
         out->print(F("\r\nAddress checking:"));
@@ -782,7 +816,7 @@ static void exec(char *cmdline)
         yield();
         
     // Handling SETADDR command         
-    } else if (strcmp_P(command, PSTR("setaddr")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("setaddr")) == 0) {
         setting = atoi(cmdline);
         ELECHOUSE_cc1101.setAddr(setting);
         out->print(F("\r\nAddress: "));
@@ -791,7 +825,7 @@ static void exec(char *cmdline)
         yield();
 
     // Handling SETWHITEDATA command         
-    } else if (strcmp_P(command, PSTR("setwhitedata")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("setwhitedata")) == 0) {
         setting = atoi(cmdline);
         ELECHOUSE_cc1101.setWhiteData(setting);
         out->print(F("\r\nWhitening "));
@@ -801,7 +835,7 @@ static void exec(char *cmdline)
         yield();
         
     // Handling SETPKTFORMAT command         
-    } else if (strcmp_P(command, PSTR("setpktformat")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("setpktformat")) == 0) {
         setting = atoi(cmdline);
         ELECHOUSE_cc1101.setPktFormat(setting);
         out->print(F("\r\nPacket format: "));
@@ -813,7 +847,7 @@ static void exec(char *cmdline)
         yield();
   
     // Handling SETLENGTHCONFIG command         
-    } else if (strcmp_P(command, PSTR("setlengthconfig")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("setlengthconfig")) == 0) {
         setting = atoi(cmdline);
         ELECHOUSE_cc1101.setLengthConfig(setting);
         out->print(F("\r\nPkt length mode: "));
@@ -824,7 +858,7 @@ static void exec(char *cmdline)
         out->print(F("\r\n"));  
   
     // Handling SETPACKETLENGTH command         
-    } else if (strcmp_P(command, PSTR("setpacketlength")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("setpacketlength")) == 0) {
         setting = atoi(cmdline);
         ELECHOUSE_cc1101.setPacketLength(setting);
         out->print(F("\r\nPkt length: "));
@@ -833,7 +867,7 @@ static void exec(char *cmdline)
         yield();
         
     // Handling SETCRC command         
-    } else if (strcmp_P(command, PSTR("setcrc")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("setcrc")) == 0) {
         setting = atoi(cmdline);
         ELECHOUSE_cc1101.setCrc(setting);
         out->print(F("\r\nCRC checking: "));
@@ -843,7 +877,7 @@ static void exec(char *cmdline)
         yield();
         
     // Handling SETCRCAF command         
-    } else if (strcmp_P(command, PSTR("setcrcaf")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("setcrcaf")) == 0) {
         setting = atoi(cmdline);
         ELECHOUSE_cc1101.setCRC_AF(setting);
         out->print(F("\r\nCRC Autoflush: "));
@@ -852,7 +886,7 @@ static void exec(char *cmdline)
          out->print(F("\r\n")); 
         
     // Handling SETDCFILTEROFF command         
-     } else if (strcmp_P(command, PSTR("setdcfilteroff")) == 0) {
+     } else if (strcasecmp_P(command, PSTR("setdcfilteroff")) == 0) {
         setting = atoi(cmdline);
         ELECHOUSE_cc1101.setDcFilterOff(setting);
         out->print(F("\r\nDC filter: "));
@@ -862,7 +896,7 @@ static void exec(char *cmdline)
         yield();
 
     // Handling SETMANCHESTER command         
-     } else if (strcmp_P(command, PSTR("setmanchester")) == 0) {
+     } else if (strcasecmp_P(command, PSTR("setmanchester")) == 0) {
         setting = atoi(cmdline);
         ELECHOUSE_cc1101.setManchester(setting);
         out->print(F("\r\nManchester coding: "));
@@ -872,7 +906,7 @@ static void exec(char *cmdline)
         yield();
 
     // Handling SETFEC command         
-     } else if (strcmp_P(command, PSTR("setfec")) == 0) {
+     } else if (strcasecmp_P(command, PSTR("setfec")) == 0) {
         setting = atoi(cmdline);
         ELECHOUSE_cc1101.setFEC(setting);
         out->print(F("\r\nForward Error Correction: "));
@@ -882,7 +916,7 @@ static void exec(char *cmdline)
         yield();
         
     // Handling SETPRE command         
-     } else if (strcmp_P(command, PSTR("setpre")) == 0) {
+     } else if (strcasecmp_P(command, PSTR("setpre")) == 0) {
         setting = atoi(cmdline);
         ELECHOUSE_cc1101.setPRE(setting);
         out->print(F("\r\nMinimum preamble bytes:"));
@@ -893,7 +927,7 @@ static void exec(char *cmdline)
 
   
     // Handling SETPQT command         
-      } else if (strcmp_P(command, PSTR("setpqt")) == 0) {
+      } else if (strcasecmp_P(command, PSTR("setpqt")) == 0) {
         setting = atoi(cmdline);
         ELECHOUSE_cc1101.setPQT(setting);
         out->print(F("\r\nPQT: "));
@@ -902,7 +936,7 @@ static void exec(char *cmdline)
         yield();
 
     // Handling SETAPPENDSTATUS command         
-       } else if (strcmp_P(command, PSTR("setappendstatus")) == 0) {
+       } else if (strcasecmp_P(command, PSTR("setappendstatus")) == 0) {
         setting = atoi(cmdline);
         ELECHOUSE_cc1101.setAppendStatus(setting);
         out->print(F("\r\nStatus bytes appending: "));
@@ -912,7 +946,7 @@ static void exec(char *cmdline)
         yield();
 
     // Handling GETRSSI command         
-      } else if (strcmp_P(command, PSTR("getrssi")) == 0) {
+      } else if (strcasecmp_P(command, PSTR("getrssi")) == 0) {
         //Rssi Level in dBm
         out->print(F("Rssi: "));
         out->println(ELECHOUSE_cc1101.getRssi());
@@ -924,7 +958,7 @@ static void exec(char *cmdline)
 
 
     // Handling SCAN command - frequency scanner by Little S@tan !
-    } else if (strcmp_P(command, PSTR("scan")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("scan")) == 0) {
         char *scanStart = strsep(&cmdline, " ");
         if (!parseFloatArg(scanStart, &scanFrom) || !parseFloatArg(cmdline, &scanTo)) {
             out->print(F("[ERROR] scan needs numeric start and stop MHz\r\n"));
@@ -950,7 +984,7 @@ static void exec(char *cmdline)
 
 
     // handling SAVE command
-    } else if (strcmp_P(command, PSTR("save")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("save")) == 0) {
         //start saving recording buffer content into EEPROM non-volatile memory 
         out->print(F("\r\nSaving recording buffer content into the non-volatile memory...\r\n"));
         
@@ -966,7 +1000,7 @@ static void exec(char *cmdline)
         
                  
     // handling LOAD command
-    } else if (strcmp_P(command, PSTR("load")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("load")) == 0) {
         // flush the recording buffer and rewind its pointers first
         zeroRecordingBuffer();
         //start loading EEPROM non-volatile memory content into recording buffer
@@ -993,7 +1027,7 @@ static void exec(char *cmdline)
 
 
     // Handling RX command         
-       } else if (strcmp_P(command, PSTR("rx")) == 0) {
+       } else if (strcasecmp_P(command, PSTR("rx")) == 0) {
         if (activeMode == MODE_RX) {
             stopActiveMode();
         } else {
@@ -1005,14 +1039,14 @@ static void exec(char *cmdline)
 
 
     // Handling CHAT command
-       } else if (strcmp_P(command, PSTR("chat")) == 0) {
+       } else if (strcasecmp_P(command, PSTR("chat")) == 0) {
         out->print(F("\r\n[CHAT] live link active | serial text will transmit over RF\r\n"));
         startActiveMode(MODE_CHAT);
         yield();
 
 
     // Handling JAM command
-       } else if (strcmp_P(command, PSTR("jam")) == 0) {
+       } else if (strcasecmp_P(command, PSTR("jam")) == 0) {
         if (activeMode == MODE_JAM) {
             stopActiveMode();
         } else {
@@ -1022,8 +1056,8 @@ static void exec(char *cmdline)
         yield();
     
     // handling BRUTE command
-    } else if (strcmp_P(command, PSTR("brute")) == 0) {
-        bruteInterval = atoi(strsep(&cmdline, " "));
+    } else if (strcasecmp_P(command, PSTR("brute")) == 0) {
+        bruteInterval = clampRawInterval(atoi(strsep(&cmdline, " ")), RAW_CHUNK_MAX_INTERVAL, "BRUTE");
         bruteBits     = atoi(cmdline);
         if (bruteBits > 16) bruteBits = 16;
         bruteMax = (bruteBits > 0) ? (1UL << bruteBits) : 0;
@@ -1043,7 +1077,7 @@ static void exec(char *cmdline)
         else { out->print(F("Wrong parameters.\r\n")); }
 
     // Handling TX command
-       } else if (strcmp_P(command, PSTR("tx")) == 0) {
+       } else if (strcasecmp_P(command, PSTR("tx")) == 0) {
         // convert hex array to set of bytes
         if ( ingestHex(cmdline, ccsendingbuffer, &len) )
         {
@@ -1062,26 +1096,28 @@ static void exec(char *cmdline)
 
 
     // handling RECRAW command
-    } else if (strcmp_P(command, PSTR("recraw")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("recraw")) == 0) {
         // Non-blocking RAW capture: arm and return immediately. serviceActiveMode()
         // waits for the signal (one poll per loop pass) and then does the single
         // timing-coherent capture - off the /cmd path, so the web never hangs.
-        recrawInterval = atoi(cmdline);
+        recrawInterval = clampRawInterval(atoi(cmdline), RAW_MAX_INTERVAL, "RECRAW");
         if (recrawInterval > 0) {
             zeroRecordingBuffer();
             enterRawMode(false);
             pinMode(gdo0, INPUT);
-            out->print(F("\r\n[RECRAW] armed | waiting for GDO0 HIGH | sample "));
+            out->print(F("\r\n[RECRAW] armed | waiting for GDO0 HIGH | "));
             out->print(recrawInterval);
-            out->print(F(" us | capture 4096 bytes | stop with x\r\n"));
+            out->print(F(" us/sample | ~"));
+            out->print((float)recrawInterval * RECORDINGBUFFERSIZE * 8 / 1000000.0f, 1);
+            out->print(F(" s window | 4096 bytes | stop with x\r\n"));
             recrawWaiting = true;
             startActiveMode(MODE_RECRAW);
         }
         else { out->print(F("Wrong parameters.\r\n")); }
 
    // handling RXRAW command - sniffer
-    } else if (strcmp_P(command, PSTR("rxraw")) == 0) {
-        sniffInterval = atoi(cmdline);
+    } else if (strcasecmp_P(command, PSTR("rxraw")) == 0) {
+        sniffInterval = clampRawInterval(atoi(cmdline), RAW_CHUNK_MAX_INTERVAL, "RXRAW");
         if (sniffInterval > 0) {
             zeroRecordingBuffer();
             enterRawMode(false);
@@ -1096,22 +1132,24 @@ static void exec(char *cmdline)
 
 
     // handling PLAYRAW command
-    } else if (strcmp_P(command, PSTR("playraw")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("playraw")) == 0) {
         // Non-blocking RAW replay: arm and return immediately. serviceActiveMode()
         // does the single timing-coherent replay off the /cmd path.
-        playrawInterval = atoi(cmdline);
+        playrawInterval = clampRawInterval(atoi(cmdline), RAW_MAX_INTERVAL, "PLAYRAW");
         if (playrawInterval > 0) {
             enterRawMode(true);
             pinMode(gdo0, OUTPUT);
-            out->print(F("\r\n[PLAYRAW] started | 4096 bytes | sample "));
+            out->print(F("\r\n[PLAYRAW] started | 4096 bytes | "));
             out->print(playrawInterval);
-            out->print(F(" us\r\n"));
+            out->print(F(" us/sample | ~"));
+            out->print((float)playrawInterval * RECORDINGBUFFERSIZE * 8 / 1000000.0f, 1);
+            out->print(F(" s\r\n"));
             startActiveMode(MODE_PLAYRAW);
         }
         else { out->print(F("Wrong parameters.\r\n")); }
 
     // handling SHOWRAW command
-    } else if (strcmp_P(command, PSTR("showraw")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("showraw")) == 0) {
     // show the content of recorded RAW signal as hex numbers
        out->print(F("\r\nRecorded RAW data:\r\n"));
        dumpBufferHex(0, RECORDINGBUFFERSIZE);
@@ -1124,7 +1162,7 @@ static void exec(char *cmdline)
 
 
     // handling SHOWBIT command
-    } else if (strcmp_P(command, PSTR("showbit")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("showbit")) == 0) {
     // show the content of recorded RAW signal as hex numbers
        out->print(F("\r\nRecorded RAW data as bit stream:\r\n"));
        for (int i = 0; i < RECORDINGBUFFERSIZE ; i = i + 32)  
@@ -1213,7 +1251,7 @@ static void exec(char *cmdline)
 
 
     // Handling ADDRAW command         
-       } else if (strcmp_P(command, PSTR("addraw")) == 0) {
+       } else if (strcasecmp_P(command, PSTR("addraw")) == 0) {
         // getting hex numbers - the content of the  frame
         // convert hex array to set of bytes
         if ( ingestHex(cmdline, textbuffer, &len) )
@@ -1238,7 +1276,7 @@ static void exec(char *cmdline)
 
         
     // Handling REC command         
-    } else if (strcmp_P(command, PSTR("rec")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("rec")) == 0) {
         if (activeMode == MODE_REC) {
             stopActiveMode();
             bigrecordingbufferpos = 0;
@@ -1252,7 +1290,7 @@ static void exec(char *cmdline)
  
 
     // Handling PLAY command         
-       } else if (strcmp_P(command, PSTR("play")) == 0) {
+       } else if (strcasecmp_P(command, PSTR("play")) == 0) {
         setting = atoi(strsep(&cmdline, " "));
         // if number of played frames is 0 it means play all frames
         if ((setting >= 0) && (setting <= framesinbigrecordingbuffer))
@@ -1294,7 +1332,7 @@ static void exec(char *cmdline)
 
 
     // Handling ADD command         
-       } else if (strcmp_P(command, PSTR("add")) == 0) {
+       } else if (strcasecmp_P(command, PSTR("add")) == 0) {
         // getting hex numbers - the content of the  frame
         // convert hex array to set of bytes
         if ( ingestHex(cmdline, textbuffer, &len) )
@@ -1325,7 +1363,7 @@ static void exec(char *cmdline)
        
 
     // Handling SHOW command         
-       } else if (strcmp_P(command, PSTR("show")) == 0) {
+       } else if (strcasecmp_P(command, PSTR("show")) == 0) {
          if (framesinbigrecordingbuffer>0)
         {
           out->print(F("\r\nFrames stored in the recording buffer:\r\n "));
@@ -1366,7 +1404,7 @@ static void exec(char *cmdline)
 
 
     // Handling FLUSH command         
-    } else if (strcmp_P(command, PSTR("flush")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("flush")) == 0) {
         // flush the recording buffer and rewind its pointers
         zeroRecordingBuffer();
         out->print(F("\r\nRecording buffer cleared.\r\n"));
@@ -1375,12 +1413,12 @@ static void exec(char *cmdline)
           
        
     // Handling ECHO command         
-    } else if (strcmp_P(command, PSTR("echo")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("echo")) == 0) {
         do_echo = atoi(cmdline);
 
     // Handling X command         
     // command 'x' stops jamming, receiveing, recording...
-    } else if (strcmp_P(command, PSTR("x")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("x")) == 0) {
         stopActiveMode();
         out->print(F("\r\n"));
         // needed for ESP8266
@@ -1388,7 +1426,7 @@ static void exec(char *cmdline)
 
     // Handling INIT command         
     // command 'init' initializes board with default settings
-    } else if (strcmp_P(command, PSTR("init")) == 0) {
+    } else if (strcasecmp_P(command, PSTR("init")) == 0) {
         // init cc1101
         cc1101initialize();
         // give feedback
@@ -1531,7 +1569,9 @@ static void serviceActiveMode(void)
                 out->print(F("s | GDO0 LOW\r\n"));
             }
         } else {
-            // one timing-coherent capture (the unavoidable, bounded block)
+            // one timing-coherent capture: soft WDT off for the duration so the unbroken
+            // block can't trip it; the interval clamp keeps the block under the hardware WDT.
+            ESP.wdtDisable();
             for (int i = 0; i < RECORDINGBUFFERSIZE; i++) {
                 byte receivedbyte = 0;
                 for (int j = 7; j > -1; j--) {
@@ -1541,6 +1581,7 @@ static void serviceActiveMode(void)
                 bigrecordingbuffer[i] = receivedbyte;
                 ESP.wdtFeed();
             }
+            ESP.wdtEnable(5000);
             modeActivityCount = RECORDINGBUFFERSIZE;
             bigrecordingbufferpos = RECORDINGBUFFERSIZE;
             out->print(F("[RECRAW] complete | 4096 bytes captured | elapsed "));
@@ -1552,7 +1593,9 @@ static void serviceActiveMode(void)
         }
     }
     else if (activeMode == MODE_PLAYRAW) {
-        // one timing-coherent replay (the unavoidable, bounded block)
+        // one timing-coherent replay: soft WDT off for the duration so the unbroken
+        // block can't trip it; the interval clamp keeps the block under the hardware WDT.
+        ESP.wdtDisable();
         for (int i = 1; i < RECORDINGBUFFERSIZE; i++) {
             byte receivedbyte = bigrecordingbuffer[i];
             for (int j = 7; j > -1; j--) {
@@ -1561,6 +1604,7 @@ static void serviceActiveMode(void)
             }
             ESP.wdtFeed();
         }
+        ESP.wdtEnable(5000);
         modeActivityCount = RECORDINGBUFFERSIZE;
         out->print(F("[PLAYRAW] complete | 4096 bytes replayed | elapsed "));
         out->print(modeElapsedSeconds());
@@ -1649,6 +1693,7 @@ void setup() {
       Serial.println(F("[RADIO] CC1101 SPI link online | default 433.92 MHz"));
       } else {
       Serial.println(F("[RADIO] ERROR: CC1101 not detected | check SPI wiring"));
+      
       };
     
       // setup variables
@@ -1955,7 +2000,7 @@ h1{font-size:23px;letter-spacing:-.04em;margin:2px 0 0}.sub{color:var(--muted);f
 .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:10px}
 .metric,.card{background:linear-gradient(145deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:12px}
 .metric{padding:12px 14px}.metric span,.label{display:block;color:var(--muted);font-size:9px;letter-spacing:.14em;text-transform:uppercase}
-.metric strong{display:block;margin-top:5px;font-size:18px;font-weight:650}.metric strong.accent{color:var(--accent);text-transform:uppercase}
+.metric strong{margin-top:5px;font-size:18px;font-weight:650}.metric strong.accent{color:var(--accent);text-transform:uppercase}
 .activity{border:1px solid var(--line);border-radius:12px;background:#091512;padding:11px 14px;margin-bottom:10px}
 .activity-top{display:flex;justify-content:space-between;gap:12px}.activity-top strong{color:var(--accent);font-weight:600}
 .track{height:4px;background:#182b27;border-radius:9px;overflow:hidden;margin-top:9px}.fill{height:100%;width:0;background:linear-gradient(90deg,var(--accent2),var(--accent));transition:width .35s}
@@ -1982,7 +2027,7 @@ button.on{color:#03110d;background:var(--accent);border-color:var(--accent);box-
  <div class="metric"><span>Mode</span><strong id="m-mode" class="accent">idle</strong></div>
  <div class="metric"><span>Frequency</span><strong id="m-freq">433.92 MHz</strong></div>
  <div class="metric"><span>Buffer</span><strong id="m-buffer">0 / 4096</strong></div>
- <div class="metric"><span>Uptime</span><strong id="m-up">0s</strong></div>
+ <div class="metric"><span>Uptime / Volts</span><strong id="m-up">0s </strong> <strong id="m-battery"> -V</strong></div>
 </div>
 <div class="activity"><div class="activity-top"><strong id="detail">Ready for command</strong><span id="activity">0 events</span></div>
  <div class="track"><div id="progress" class="fill"></div></div></div>
@@ -2062,6 +2107,7 @@ async function poll(){if(commandBusy)return;try{
 	 if(!profileHydrated){$('mhz').value=s.freq.toFixed(4);$('rxbw').value=s.rxbw.toFixed(4);profileHydrated=true}
  $('m-buffer').textContent=s.bufferPos+' / '+s.bufferSize;$('m-up').textContent=fmtTime(s.uptime);
  $('frames').textContent=s.frames+' frame'+(s.frames===1?'':'s')+' stored';
+ $('m-battery').textContent=s.battery + (s.battery < 3.0 ? ' ⚠️ LOW!' : '');
  $('detail').textContent=detailFor(s);$('activity').textContent=s.elapsed+'s active / '+s.activity+' events';
  $('progress').style.width=(s.progress<0?0:s.progress)+'%';
  for(const m of ['sniff','jam','rx','rec','scan','brute','recraw','playraw']){
@@ -2083,6 +2129,11 @@ static void startAP(void)
     Serial.print(F(AP_SSID));
     Serial.print(F(" | web http://"));
     Serial.println(WiFi.softAPIP());
+    // this for sta mode
+    // WiFi.mode(WIFI_STA);
+    // WiFi.config(apIP, apGateway, apSubnet);
+    // WiFi.begin(ssid, password);
+    
 }
 
 static void handleRoot(void)
@@ -2127,12 +2178,13 @@ static void handleStatus(void)
 {
     currentFreq = readRadioFrequencyMHz();
     currentRxBw = readRadioRxBwKHz();
+    float battery = getBatteryVoltage();
     byte radioState = readRadioState();
     String j = "{";
     j += "\"mode\":\"";     j += modeName();                        j += "\",";
     j += "\"freq\":";       j += String(currentFreq, 4);            j += ",";
     j += "\"rxbw\":";       j += String(currentRxBw, 4);            j += ",";
-    j += "\"marcstate\":";  j += radioState;                         j += ",";
+    j += "\"marcstate\":";  j += radioState;                        j += ",";
     j += "\"frames\":";     j += framesinbigrecordingbuffer;        j += ",";
     j += "\"bufferPos\":";  j += bigrecordingbufferpos;             j += ",";
     j += "\"bufferSize\":"; j += RECORDINGBUFFERSIZE;               j += ",";
@@ -2140,10 +2192,13 @@ static void handleStatus(void)
     j += "\"elapsed\":";    j += modeElapsedSeconds();              j += ",";
     j += "\"progress\":";   j += modeProgressPercent();             j += ",";
     j += "\"cursor\":";     j += String(scanCursor, 2);             j += ",";
-    j += "\"waiting\":";    j += recrawWaiting ? "true" : "false"; j += ",";
+    j += "\"waiting\":";    j += recrawWaiting ? "true" : "false";  j += ",";
     j += "\"total\":";      j += bruteMax;                          j += ",";
     j += "\"scanFreq\":";   j += String(scanBestFreq, 2);           j += ",";
     j += "\"scanRssi\":";   j += scanBestRssi;                      j += ",";
+        // ====== ДОБАВЛЯЕМ БАТАРЕЮ ======
+    j += "\"battery\":" + String(battery, 2) + ",";
+
     j += "\"uptime\":";     j += (millis() / 1000);
     j += "}";
     server.sendHeader(F("Cache-Control"), F("no-store"));
